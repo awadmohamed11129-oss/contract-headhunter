@@ -4,86 +4,17 @@ What each change solves, for the team. Newest first. Add an entry with every com
 
 ---
 
-## 2026-11-17 · Contractor import format
+## 2026-11-17 · UI redesign: nav always visible, progress rail removed
 
 ### What this solves
-- A module that prepares contractor data needs to know exactly what the app imports.
+- In the new purple header, unselected nav items were invisible (their text took the header's own purple) and only showed on hover.
+- The progress rail with the moving ∞ logo under the header took space without adding anything.
+- The redesign's new wordmark and colours made 3 screen tests fail, and one line failed CI's format check.
 
 ### How to use
-- [CONTRACTOR_IMPORT_FORMAT.md](CONTRACTOR_IMPORT_FORMAT.md): the folder layout (one contractor file plus optional `resume/<talent_id>.pdf`), the CSV rules, every column (required or not, type, and whether Gemini sees it), how an import is applied, privacy rules, and an example file.
-- Linked from the README's documentation table.
-
----
-
-## 2026-11-15 · Guide: running the code locally
-
-### What this solves
-- Teammates had no single page explaining how to get the project running on their own computer.
-
-### How to use
-- Follow [RUN_LOCALLY.md](RUN_LOCALLY.md): install Docker and Git, add a Gemini key, build, start the app at http://localhost:8080, get data in, and run the checks before a pull request. It also covers the command line, common errors and keeping personal data safe.
-- Linked from the README (Installation and the documentation table).
-
----
-
-## 2026-11-11 · Clean-up: unused code and old run files
-
-### What this solves
-- Code nothing used any more, and old v0 / experiment output, made the project harder to read and the data folder bigger.
-
-### How to use
-- **Removed code** (nothing in the app used it):
-  - `normalize/must_have.py` and the `must_have_soft_markers` list in `config/normalization.yaml` (v0 matching);
-  - `config/profession_titles.yaml` and its loader;
-  - `RemotePreference` (schemas), `write_result` (llm/trial.py), `remove_value` (secrets_file.py);
-  - their tests. The media/content skill tests stay, in `tests/test_media_skills.py`.
-- **Old files moved, not deleted**, to `data/backups/cleanup-<time>/` (about 19 MB):
-  - v0 matches (`matches.csv`, `matches_flagged.csv`), `embeddings/`, `test_data_matches/`;
-  - one-off copies (`inbox.before-dev-trim.20261108/`, `jobs.csv.backup`);
-  - Gemini trial runs (`llm_results/2026…Z/`, `experiments/`, `compare-*`) and `llm_preview/`;
-  - everything that was in `exports/` (the folder stays: exports still go there).
-- Kept: `data/samples/` (used by tests), `data/eval/` (labels for `llm-compare`), `data/llm_results/judgments/` (Gemini's answers cache), `data/backups/`.
-
----
-
-## 2026-11-11 · Fixing a jobs CSV and picking it again now works; Delete job clears Gemini's results
-
-### What this solves
-- A jobs CSV with one bad row (for example `in-person` as the work mode) stayed in the app's inbox, so every Ingest read the old file again and showed the same error, even after the fixed file was picked.
-- A deleted job imported again got Gemini's old answer back from the cache, and old decisions came back with it.
-
-### How to use
-- **A bad row is dropped and reported.** The other rows of the file go in, and the file leaves the inbox. The log says why the row was dropped; fix it in your file and pick the file again, and the fixed row goes in.
-- **A stored job is never considered again**, even if its row changes ("already stored"). To change one: mark it unavailable on Jobs, delete it, then import it again. The same goes for "Add a job by hand", which checks every field before saving.
-- **Delete job** now also removes Gemini's results for that job:
-  - its shortlist rows (after a backup);
-  - its cached Gemini answers, moved to `data/backups/removed-judgments/<time>-<job>/`, so the job imported again is sent to Gemini afresh (one call).
-  - Reviewers' decisions stay in `reviews.csv` as evaluation data, but no longer count for the re-imported job.
-  - The job leaves the app entirely. Only a contractor hired for it still sees its title on Talent (before, every approved contractor did).
-- **Tests:** `tests/test_job_csv_updates.py`, `tests/test_deletions.py`, `tests/test_job_csv.py`.
-
----
-
-## 2026-11-11 · Runs keep going across tabs; contact columns; template saved where you choose
-
-### What this solves
-- Switching to another tab while Gemini was working stopped the run.
-- The jobs template had nowhere to put the HR contact.
-- "Get CSV template" always wrote to the same place inside the data folder.
-
-### How to use
-- **Ingest and Find matches keep running when you change tab.**
-  - The header shows "Matching… 45%" (or "Ingesting…") on every tab; click it to go back to Find matches.
-  - When the run needs your answer about today's Gemini quota, the header says "Answer needed on Find matches" and the question appears there.
-  - Coming back to Find matches shows the run's log, progress and result.
-- **Contact columns:** the jobs CSV and the "Add a job by hand" form have `contact_person` and `contact_email`.
-  - Both are optional.
-  - If the email is left empty, an address written in the responsibilities or qualifications is used.
-  - Jobs and Results cards show the name next to the email (with its copy button).
-  - Personal data: never sent to Gemini or written to logs.
-  - CSV files without these columns still load, since columns are matched by name.
-- **Get CSV template:** makes a new copy every time. The desktop app asks where to save it; the browser preview downloads it, and the browser asks where, or uses Downloads, as its settings say.
-- **Tests:** `tests/test_run_job.py`, `tests/test_job_csv.py`.
+- Every nav item is readable at all times; the current screen keeps its brighter background and white underline.
+- The rail under the header is gone; the "do g∞d" wordmark at the top left stays.
+- Screen tests now read colours from the app's own constants (`SHADE_EDGE`, `JOB_STATE_STYLE`), so a palette change no longer breaks them.
 
 ---
 

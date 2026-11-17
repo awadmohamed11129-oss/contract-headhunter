@@ -14,7 +14,7 @@ from nicegui import ui
 from nicegui.testing.user_simulation import user_simulation
 
 from jobmatch.app.service import AppError, AppService, job_summary
-from jobmatch.app.ui import build_root, keep_order
+from jobmatch.app.ui import JOB_STATE_STYLE, build_root, keep_order
 from jobmatch.schemas import Decision, Job, JobAvailability, LlmMatch, LlmVerdict
 from jobmatch.storage.csv_store import CsvJobRepository, CsvStore
 from test_pipeline import add_jobs, contractor_file
@@ -184,13 +184,13 @@ def test_jobs_screen_colours_and_toggles(judged: AppService) -> None:
         await user.should_see("Scanned · no match", marker="job-summary")
         await user.should_see("3 job(s) · 3 scanned (2 with matches, 1 with no match)")
         red = next(iter(user.find(marker="job-state-no_match").elements))
-        assert "background-color: #ffcfcf" in _css(red)
+        assert f"background-color: {JOB_STATE_STYLE['no_match'][0]}" in _css(red)
         await user.should_not_see(marker="reopen:paste:3")  # Reopen: closed jobs only
         user.find(marker="unavailable:paste:3").click()  # the French recruiting job
         await user.should_see("Closed · unavailable", marker="job-summary")
         await user.should_see(marker="reopen:paste:3")
         grey = next(iter(user.find(marker="job-state-inactive").elements))
-        assert "background-color: #EEEEEE" in _css(grey)
+        assert f"background-color: {JOB_STATE_STYLE['inactive'][0]}" in _css(grey)
         # The first card (Analyste de données) is closed: it stays first until the page reloads.
         await user.should_not_see(marker="completed:paste:2")  # no Completed button (11-10)
         await user.should_not_see(marker="delete-job:paste:2")  # Delete: closed jobs only
