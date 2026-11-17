@@ -4,6 +4,20 @@ What each change solves, for the team. Newest first. Add an entry with every com
 
 ---
 
+## 2026-11-17 · UI redesign: nav always visible, progress rail removed
+
+### What this solves
+- In the new purple header, unselected nav items were invisible (their text took the header's own purple) and only showed on hover.
+- The progress rail with the moving ∞ logo under the header took space without adding anything.
+- The redesign's new wordmark and colours made 3 screen tests fail, and one line failed CI's format check.
+
+### How to use
+- Every nav item is readable at all times; the current screen keeps its brighter background and white underline.
+- The rail under the header is gone; the "do g∞d" wordmark at the top left stays.
+- Screen tests now read colours from the app's own constants (`SHADE_EDGE`, `JOB_STATE_STYLE`), so a palette change no longer breaks them.
+
+---
+
 ## 2026-11-10 · Résumé button on Results
 
 ### What this solves

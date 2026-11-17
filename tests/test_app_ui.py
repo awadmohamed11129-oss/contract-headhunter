@@ -9,7 +9,14 @@ from nicegui import ui
 from nicegui.testing.user_simulation import user_simulation
 
 from jobmatch.app.service import AppService
-from jobmatch.app.ui import SCORE_SHADE, SHADE, build_root, score_shade, title_case
+from jobmatch.app.ui import (
+    SCORE_SHADE,
+    SHADE,
+    SHADE_EDGE,
+    build_root,
+    score_shade,
+    title_case,
+)
 from jobmatch.schemas import Decision, Job
 from jobmatch.secrets_file import read_env_file
 from jobmatch.storage.csv_store import CsvReviewRepository, CsvStore
@@ -28,7 +35,7 @@ def run_ui(service: AppService, scenario: Callable) -> None:
 def test_home_asks_for_a_key_first(service: AppService) -> None:
     async def scenario(user) -> None:  # noqa: ANN001
         await user.open("/")
-        await user.should_see("do good talent", marker="app-title")  # the header's title
+        await user.should_see(marker="app-title")  # the header's wordmark ("do g∞d")
         await user.should_see("Add your Gemini key in Settings")
         await user.should_see("Find matches")
         await user.should_see("0 contractor(s) processed")
@@ -69,7 +76,7 @@ def test_results_show_fits_and_store_a_decision(
         assert box.style["border-left"].startswith("1px")  # undecided: no colour
         user.find(kind=ui.button, content="Approve").click()
         await user.should_see("Approved")
-        assert box.style["border-left"] == "4px solid #90DCA2"  # green: approved
+        assert box.style["border-left"] == f"4px solid {SHADE_EDGE['green']}"  # approved
         user.find(marker="reset-decision").click()
         await user.should_not_see("Approved")
         assert box.style["border-left"].startswith("1px")

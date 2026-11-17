@@ -93,13 +93,6 @@ WORDMARK_HTML = (
     '<path class="bs" d="PATH" pathLength="100"/><path class="tr" d="PATH" pathLength="100"/>'
     '</svg><span>d</span></div><div class="brand-tag">a talent company</div></div>'
 ).replace("PATH", INF_PATH)
-# A rail under the header: the infinity sign glides to the screen you are on.
-PROGRESS_HTML = (
-    '<div class="dg-track"><div class="dg-rail"><div id="dg-fill" class="dg-fill"></div>'
-    '<svg id="dg-knob" class="dg-knob" viewBox="2 4 54 24" aria-hidden="true">'
-    '<path d="PATH"/></svg></div><div id="dg-step" class="dg-step">Find matches</div></div>'
-).replace("PATH", INF_PATH)
-
 APP_CSS = """
 body { font-family: Inter, "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
   counter-reset: dgstep; }
@@ -118,7 +111,7 @@ body { font-family: Inter, "Segoe UI", system-ui, -apple-system, Roboto, sans-se
 .brand-row { display: inline-flex; align-items: baseline; color: #fff; font-size: 34px;
   font-weight: 800; letter-spacing: -.03em; }
 .inf { height: .6em; width: auto; margin: 0 .03em; overflow: visible; }
-.inf path, .dg-knob path { fill: none; stroke: #fff; stroke-width: 5.5; stroke-linecap: round;
+.inf path { fill: none; stroke: #fff; stroke-width: 5.5; stroke-linecap: round;
   stroke-linejoin: round; }
 .inf .bs { opacity: .8; }
 .inf .tr { stroke-dasharray: 16 84; animation: trace 3.6s linear infinite;
@@ -129,21 +122,11 @@ body { font-family: Inter, "Segoe UI", system-ui, -apple-system, Roboto, sans-se
   60% { transform: rotate(6deg) scale(1.06); } }
 .brand-tag { color: rgba(255,255,255,.88); font: 12px "Space Mono", ui-monospace, monospace;
   letter-spacing: .06em; margin-top: 5px; }
-.nav-btn { color: rgba(255,255,255,.82) !important; border-radius: 9999px !important;
+.q-header .nav-btn { color: rgba(255,255,255,.82) !important; border-radius: 9999px !important;
   padding: 6px 16px; font-weight: 600; }
-.nav-btn:hover { background: rgba(255,255,255,.12); color: #fff !important; }
-.nav-btn.nav-active { background: rgba(255,255,255,.2); color: #fff !important;
+.q-header .nav-btn:hover { background: rgba(255,255,255,.12); color: #fff !important; }
+.q-header .nav-btn.nav-active { background: rgba(255,255,255,.2); color: #fff !important;
   box-shadow: inset 0 -3px 0 #fff; }
-.dg-rail { position: relative; height: 28px; }
-.dg-rail::before { content: ""; position: absolute; left: 0; right: 0; top: 10px; height: 8px;
-  border-radius: 9999px; background: #816BB3; opacity: .75; }
-.dg-fill { position: absolute; left: 0; top: 10px; height: 8px; border-radius: 9999px;
-  background: rgba(255,255,255,.55); width: 26px;
-  transition: width .7s cubic-bezier(.34,1.3,.64,1); }
-.dg-knob { position: absolute; top: 0; left: 0; width: 52px; height: 28px; overflow: visible;
-  transition: left .7s cubic-bezier(.34,1.56,.64,1); animation: bob 3s ease-in-out infinite; }
-@keyframes bob { 50% { transform: translateY(-2px) rotate(-3deg); } }
-.dg-step { color: #fff; font-weight: 600; font-size: 17px; letter-spacing: .04em; margin-top: 6px; }
 .dg-sheet { border: 3px solid #DDD9F0; animation: rise .45s ease both; }
 @keyframes rise { from { opacity: 0; transform: translateY(12px); } }
 .q-card { border-radius: 1.5rem; border: 2px solid #E4DFF3;
@@ -170,20 +153,12 @@ body { font-family: Inter, "Segoe UI", system-ui, -apple-system, Roboto, sans-se
   *, ::before, ::after { animation: none !important; transition: none !important; } }
 """
 
-# Highlights the current screen's nav button and glides the infinity knob along the rail.
+# Highlights the current screen's nav button.
 NAV_JS = """<script>
 if (!window.__dgNav) {
-  const PATHS = ['/', '/results', '/jobs', '/talent', '/settings'];
-  const NAMES = ['Find matches', 'Results', 'Jobs', 'Talent', 'Settings'];
   window.__dgNav = setInterval(() => {
-    const i = Math.max(0, PATHS.indexOf(location.pathname));
     document.querySelectorAll('.nav-btn').forEach((b) =>
       b.classList.toggle('nav-active', b.getAttribute('data-path') === location.pathname));
-    const k = document.getElementById('dg-knob'), f = document.getElementById('dg-fill');
-    const s = document.getElementById('dg-step');
-    if (k) k.style.left = 'calc((100% - 52px) * ' + (i / 4) + ')';
-    if (f) f.style.width = 'calc(26px + (100% - 52px) * ' + (i / 4) + ')';
-    if (s && s.textContent !== NAMES[i]) s.textContent = NAMES[i];
   }, 150);
 }
 </script>"""
@@ -1227,9 +1202,7 @@ def scroll_to_card(page: str, job_id: str) -> None:
 
 def _chip(text: str, icon: str, shade: str | None = None) -> None:
     style = (
-        shade_style(shade)
-        if shade
-        else "background-color: #F3EEFB; border: 1.5px solid #E0D5F3;"
+        shade_style(shade) if shade else "background-color: #F3EEFB; border: 1.5px solid #E0D5F3;"
     )
     ui.chip(text, icon=icon, color=None, text_color=None).props("dense").classes(
         "m-0 text-sm"
@@ -2221,13 +2194,11 @@ def build_root(service: AppService, *, native: bool) -> Callable[[], None]:
                 ("Talent", "/talent"),
                 ("Settings", "/settings"),
             ):
-                ui.button(text, on_click=_go(path)).props(
+                # color=None: a flat button's text otherwise takes the primary colour, the
+                # header's own purple, and the unselected items disappear.
+                ui.button(text, on_click=_go(path), color=None).props(
                     f'flat no-caps data-path="{path}"'
                 ).classes("nav-btn")
-        # The progress rail under the header: the infinity sign glides to the current screen.
-        ui.html(PROGRESS_HTML, sanitize=False).classes(
-            "w-full mx-auto max-w-[1600px] px-3 sm:px-6 pt-3"
-        )
         # NiceGUI's page wrapper is a left-aligned column sized to its content: make it full
         # width and centre each screen in it (the header is separate and keeps full width).
         ui.sub_pages(
