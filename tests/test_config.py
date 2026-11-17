@@ -8,15 +8,12 @@ from jobmatch.config import (
     ContractPhrases,
     LlmSettings,
     NormalizationRules,
-    ProfessionTitles,
     ScoreBands,
     SkillsTaxonomy,
     load_canada_locations,
     load_company_aliases,
     load_contract_phrases,
     load_normalization_rules,
-    load_profession_titles,
-    load_professions,
     load_settings,
     load_skills_taxonomy,
 )
@@ -61,21 +58,6 @@ def test_both_thinking_settings_are_rejected() -> None:
     data.update(thinking_budget=0, thinking_level="low")
     with pytest.raises(ValidationError, match="not both"):
         LlmSettings.model_validate(data)
-
-
-def test_profession_titles_name_real_professions() -> None:
-    titles = load_profession_titles(CONFIG_DIR)
-    professions = load_professions(CONFIG_DIR)
-    assert professions is not None
-    assert set(titles.titles) <= set(professions.professions)
-    assert "rédacteur" in titles.titles["content writing and editing"]
-
-
-def test_title_phrase_under_two_professions_is_rejected() -> None:
-    with pytest.raises(ValidationError, match="both"):
-        ProfessionTitles.model_validate(
-            {"version": 1, "titles": {"a": ["Producer"], "b": ["producer"]}}
-        )
 
 
 def test_repo_taxonomies_load() -> None:

@@ -4,6 +4,48 @@ What each change solves, for the team. Newest first. Add an entry with every com
 
 ---
 
+## 2026-11-17 · Contractor import format
+
+### What this solves
+- A module that prepares contractor data needs to know exactly what the app imports.
+
+### How to use
+- [CONTRACTOR_IMPORT_FORMAT.md](CONTRACTOR_IMPORT_FORMAT.md): the folder layout (one contractor file plus optional `resume/<talent_id>.pdf`), the CSV rules, every column (required or not, type, and whether Gemini sees it), how an import is applied, privacy rules, and an example file.
+- Linked from the README's documentation table.
+
+---
+
+## 2026-11-15 · Guide: running the code locally
+
+### What this solves
+- Teammates had no single page explaining how to get the project running on their own computer.
+
+### How to use
+- Follow [RUN_LOCALLY.md](RUN_LOCALLY.md): install Docker and Git, add a Gemini key, build, start the app at http://localhost:8080, get data in, and run the checks before a pull request. It also covers the command line, common errors and keeping personal data safe.
+- Linked from the README (Installation and the documentation table).
+
+---
+
+## 2026-11-11 · Clean-up: unused code and old run files
+
+### What this solves
+- Code nothing used any more, and old v0 / experiment output, made the project harder to read and the data folder bigger.
+
+### How to use
+- **Removed code** (nothing in the app used it):
+  - `normalize/must_have.py` and the `must_have_soft_markers` list in `config/normalization.yaml` (v0 matching);
+  - `config/profession_titles.yaml` and its loader;
+  - `RemotePreference` (schemas), `write_result` (llm/trial.py), `remove_value` (secrets_file.py);
+  - their tests. The media/content skill tests stay, in `tests/test_media_skills.py`.
+- **Old files moved, not deleted**, to `data/backups/cleanup-<time>/` (about 19 MB):
+  - v0 matches (`matches.csv`, `matches_flagged.csv`), `embeddings/`, `test_data_matches/`;
+  - one-off copies (`inbox.before-dev-trim.20261108/`, `jobs.csv.backup`);
+  - Gemini trial runs (`llm_results/2026…Z/`, `experiments/`, `compare-*`) and `llm_preview/`;
+  - everything that was in `exports/` (the folder stays: exports still go there).
+- Kept: `data/samples/` (used by tests), `data/eval/` (labels for `llm-compare`), `data/llm_results/judgments/` (Gemini's answers cache), `data/backups/`.
+
+---
+
 ## 2026-11-11 · Fixing a jobs CSV and picking it again now works; Delete job clears Gemini's results
 
 ### What this solves

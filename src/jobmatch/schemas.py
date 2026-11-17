@@ -37,13 +37,6 @@ class RemoteType(StrEnum):
     UNKNOWN = "unknown"
 
 
-class RemotePreference(StrEnum):
-    ONSITE = "onsite"
-    HYBRID = "hybrid"
-    REMOTE = "remote"
-    ANY = "any"
-
-
 class EmploymentType(StrEnum):
     CONTRACT = "contract"
     PERMANENT = "permanent"

@@ -9,7 +9,6 @@ this machine (data/llm_results/, git-ignored).
 """
 
 import json
-from pathlib import Path
 
 from pydantic import BaseModel, ValidationError
 
@@ -24,7 +23,6 @@ from jobmatch.llm.prompt import (
     check_output,
 )
 from jobmatch.schemas import LlmUsage
-from jobmatch.storage.files import atomic_write_text
 
 
 class Judged(BaseModel):
@@ -122,10 +120,3 @@ class TrialResult(BaseModel):
     review_usage: LlmUsage | None = None  # the whole review call (shared by its batch)
     review_raw_text: str | None = None
     review_batch: list[str] = []  # v15: the job IDs reviewed in the same call
-
-
-def write_result(result: TrialResult, folder: Path, name: str) -> Path:
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"{name}.json"
-    atomic_write_text(path, result.model_dump_json(indent=2) + "\n")
-    return path

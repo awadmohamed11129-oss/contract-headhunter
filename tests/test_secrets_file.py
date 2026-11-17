@@ -10,7 +10,6 @@ from jobmatch.secrets_file import (
     EnvFileError,
     load_into_environ,
     read_env_file,
-    remove_value,
     set_value,
 )
 
@@ -42,7 +41,6 @@ def test_reads_compose_style_lines(tmp_path: Path) -> None:
 
 def test_missing_file_is_empty(tmp_path: Path) -> None:
     assert read_env_file(tmp_path / "nope.env") == {}
-    assert remove_value(tmp_path / "nope.env", "X") is False
 
 
 def test_load_keeps_existing_variables_unless_told(tmp_path: Path) -> None:
@@ -90,11 +88,3 @@ def test_bad_names_and_multiline_values_are_refused_without_echoing_the_value(
         set_value(path, "GEMINI_API_KEY", f"{FAKE}\nINJECTED=1")
     assert FAKE not in str(exc.value)
     assert not path.exists()
-
-
-def test_remove_value(tmp_path: Path) -> None:
-    path = tmp_path / ".env"
-    path.write_text(f"GEMINI_API_KEY={FAKE}\nKEEP=1\n", encoding="utf-8")
-    assert remove_value(path, "GEMINI_API_KEY") is True
-    assert read_env_file(path) == {"KEEP": "1"}
-    assert remove_value(path, "GEMINI_API_KEY") is False
