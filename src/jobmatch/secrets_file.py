@@ -108,15 +108,3 @@ def set_value(path: Path, key: str, value: str) -> None:
     if not replaced:
         out.append(line)
     atomic_write_text(path, "\n".join(out) + "\n")
-
-
-def remove_value(path: Path, key: str) -> bool:
-    """Delete KEY from the file. Returns whether it was there."""
-    if not path.exists():
-        return False
-    lines = path.read_text(encoding="utf-8-sig").splitlines()
-    kept = [ln for ln in lines if (p := _split(ln)) is None or p[0] != key]
-    if len(kept) == len(lines):
-        return False
-    atomic_write_text(path, "\n".join(kept) + ("\n" if kept else ""))
-    return True
