@@ -71,16 +71,128 @@ from jobmatch.sources.contractor_upsert import ContractorFileError
 from jobmatch.storage.csv_store import CsvStoreError
 from jobmatch.storage.loader import StorageBackendUnavailable
 
-# Screen width follows the window: full width, side padding growing with the window, capped
-# at 1600 px so lines stay readable on very wide monitors. Settings is a short form: narrower.
-PAGE = "w-full mx-auto max-w-[1600px] px-2 sm:px-4 lg:px-8"
-PAGE_NARROW = "w-full mx-auto max-w-[900px] px-2 sm:px-4 lg:px-8"
+# The org's theme (redesign): a deep purple page, header and primary buttons; every screen is
+# a white rounded sheet holding soft-shadow cards. The decision colours (SHADE below:
+# green / yellow / red, each with a darker outer edge) carry meaning and are not the theme.
+THEME_PRIMARY = "#593B9D"
+THEME_ACCENT = "#7E4891"
+THEME_BACKGROUND = "linear-gradient(170deg, #593B9D 0%, #4F3590 55%, #5A3D9F 100%)"
 
-# The org's theme, light purple. The header and main buttons use a medium purple so white
-# text on them stays readable; the page background is the light purple. The decision colours
-# (SHADE below: green / yellow / red) carry meaning and are not part of the theme.
-THEME_PRIMARY = "#7E57C2"
-THEME_BACKGROUND = "#EDE7F6"
+FONT_LINK = (
+    '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800'
+    '&family=Space+Mono&display=swap" rel="stylesheet">'
+)
+# The infinity sign, drawn as one stroked path (it replaces the "oo" of "good").
+INF_PATH = (
+    "M18 8c-5.5 0-10 3.6-10 8s4.5 8 10 8c8 0 14-16 22-16 5.5 0 10 3.6 10 8s-4.5 8-10 8"
+    "c-8 0-14-16-22-16z"
+)
+WORDMARK_HTML = (
+    '<div class="brand"><div class="brand-row"><span>do g</span>'
+    '<svg class="inf" viewBox="2 4 54 24" aria-hidden="true">'
+    '<path class="bs" d="PATH" pathLength="100"/><path class="tr" d="PATH" pathLength="100"/>'
+    '</svg><span>d</span></div><div class="brand-tag">a talent company</div></div>'
+).replace("PATH", INF_PATH)
+# A rail under the header: the infinity sign glides to the screen you are on.
+PROGRESS_HTML = (
+    '<div class="dg-track"><div class="dg-rail"><div id="dg-fill" class="dg-fill"></div>'
+    '<svg id="dg-knob" class="dg-knob" viewBox="2 4 54 24" aria-hidden="true">'
+    '<path d="PATH"/></svg></div><div id="dg-step" class="dg-step">Find matches</div></div>'
+).replace("PATH", INF_PATH)
+
+APP_CSS = """
+body { font-family: Inter, "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+  counter-reset: dgstep; }
+.q-layout { position: relative; z-index: 1; }
+.q-header { background: rgba(89,59,157,.94) !important; backdrop-filter: blur(8px);
+  box-shadow: none; }
+.orbs { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
+.orbs i { position: absolute; border-radius: 50%; border: 2px solid rgba(255,255,255,.2);
+  background: rgba(150,80,170,.16); animation: drift 18s ease-in-out infinite alternate; }
+.orbs i:nth-child(1) { width: 300px; height: 300px; right: 8%; top: 6%; }
+.orbs i:nth-child(2) { width: 200px; height: 200px; left: 3%; bottom: 12%; animation-delay: -6s; }
+.orbs i:nth-child(3) { width: 380px; height: 380px; right: -90px; bottom: -120px;
+  animation-delay: -11s; }
+@keyframes drift { to { transform: translate(18px, -24px); } }
+.brand { line-height: 1; cursor: pointer; }
+.brand-row { display: inline-flex; align-items: baseline; color: #fff; font-size: 34px;
+  font-weight: 800; letter-spacing: -.03em; }
+.inf { height: .6em; width: auto; margin: 0 .03em; overflow: visible; }
+.inf path, .dg-knob path { fill: none; stroke: #fff; stroke-width: 5.5; stroke-linecap: round;
+  stroke-linejoin: round; }
+.inf .bs { opacity: .8; }
+.inf .tr { stroke-dasharray: 16 84; animation: trace 3.6s linear infinite;
+  filter: drop-shadow(0 0 3px #fff); }
+@keyframes trace { from { stroke-dashoffset: 100; } to { stroke-dashoffset: 0; } }
+.brand:hover .inf { animation: wobble .7s ease; }
+@keyframes wobble { 30% { transform: rotate(-8deg) scale(1.12); }
+  60% { transform: rotate(6deg) scale(1.06); } }
+.brand-tag { color: rgba(255,255,255,.88); font: 12px "Space Mono", ui-monospace, monospace;
+  letter-spacing: .06em; margin-top: 5px; }
+.nav-btn { color: rgba(255,255,255,.82) !important; border-radius: 9999px !important;
+  padding: 6px 16px; font-weight: 600; }
+.nav-btn:hover { background: rgba(255,255,255,.12); color: #fff !important; }
+.nav-btn.nav-active { background: rgba(255,255,255,.2); color: #fff !important;
+  box-shadow: inset 0 -3px 0 #fff; }
+.dg-rail { position: relative; height: 28px; }
+.dg-rail::before { content: ""; position: absolute; left: 0; right: 0; top: 10px; height: 8px;
+  border-radius: 9999px; background: #816BB3; opacity: .75; }
+.dg-fill { position: absolute; left: 0; top: 10px; height: 8px; border-radius: 9999px;
+  background: rgba(255,255,255,.55); width: 26px;
+  transition: width .7s cubic-bezier(.34,1.3,.64,1); }
+.dg-knob { position: absolute; top: 0; left: 0; width: 52px; height: 28px; overflow: visible;
+  transition: left .7s cubic-bezier(.34,1.56,.64,1); animation: bob 3s ease-in-out infinite; }
+@keyframes bob { 50% { transform: translateY(-2px) rotate(-3deg); } }
+.dg-step { color: #fff; font-weight: 600; font-size: 17px; letter-spacing: .04em; margin-top: 6px; }
+.dg-sheet { border: 3px solid #DDD9F0; animation: rise .45s ease both; }
+@keyframes rise { from { opacity: 0; transform: translateY(12px); } }
+.q-card { border-radius: 1.5rem; border: 2px solid #E4DFF3;
+  box-shadow: 0 6px 22px rgba(89,59,157,.10), 0 1px 3px rgba(89,59,157,.08); }
+.text-h5 { color: #4B3499; font-weight: 800; font-size: 2rem; letter-spacing: -.03em;
+  line-height: 1.1; }
+.text-h6 { color: #1E1A33; font-weight: 700; }
+.step-h { display: flex; align-items: center; gap: 14px; }
+.step-h::before { counter-increment: dgstep; content: counter(dgstep); width: 36px; height: 36px;
+  border-radius: 50%; background: #7E4891; color: #fff; display: inline-flex;
+  align-items: center; justify-content: center; font-size: 17px; font-weight: 700;
+  transition: transform .25s; }
+.q-card:hover .step-h::before { transform: scale(1.12) rotate(-6deg); }
+.q-btn:not(.q-btn--round) { border-radius: 1.1rem; font-weight: 600;
+  transition: transform .15s, box-shadow .15s; }
+.q-btn:not(.q-btn--round):hover { transform: translateY(-1px); }
+.q-btn--outline:before { border-width: 1.5px; }
+.q-btn.bg-primary { box-shadow: 0 4px 14px rgba(89,59,157,.35); }
+.q-field--outlined .q-field__control { border-radius: 1rem; }
+.q-expansion-item .q-item { border-radius: .75rem; }
+.q-expansion-item .q-item:hover { background: #F6F2FC; }
+.nicegui-log { border-radius: 1.25rem; border: 2px solid #E4DFF3; background: #FBFAFE; }
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after { animation: none !important; transition: none !important; } }
+"""
+
+# Highlights the current screen's nav button and glides the infinity knob along the rail.
+NAV_JS = """<script>
+if (!window.__dgNav) {
+  const PATHS = ['/', '/results', '/jobs', '/talent', '/settings'];
+  const NAMES = ['Find matches', 'Results', 'Jobs', 'Talent', 'Settings'];
+  window.__dgNav = setInterval(() => {
+    const i = Math.max(0, PATHS.indexOf(location.pathname));
+    document.querySelectorAll('.nav-btn').forEach((b) =>
+      b.classList.toggle('nav-active', b.getAttribute('data-path') === location.pathname));
+    const k = document.getElementById('dg-knob'), f = document.getElementById('dg-fill');
+    const s = document.getElementById('dg-step');
+    if (k) k.style.left = 'calc((100% - 52px) * ' + (i / 4) + ')';
+    if (f) f.style.width = 'calc(26px + (100% - 52px) * ' + (i / 4) + ')';
+    if (s && s.textContent !== NAMES[i]) s.textContent = NAMES[i];
+  }, 150);
+}
+</script>"""
+
+# Screen width follows the window: full width, capped at 1600 px so lines stay readable on
+# very wide monitors. Settings is a short form: narrower. Every screen is a white sheet.
+SHEET = "dg-sheet bg-white rounded-[36px] shadow-2xl p-4 sm:p-6 lg:p-10"
+PAGE = f"w-full mx-auto max-w-[1600px] {SHEET}"
+PAGE_NARROW = f"w-full mx-auto max-w-[900px] {SHEET}"
 
 RUN_ERRORS = (
     AppError,
@@ -351,7 +463,7 @@ def home_page(service: AppService, native: bool) -> None:
                 )
 
         with ui.card().classes("w-full gap-2"):
-            ui.label("Contractors (optional)").classes("text-h6")
+            ui.label("Contractors (optional)").classes("text-h6 step-h")
             count = ui.label().classes("text-sm text-grey-8")
 
             def show_count() -> None:
@@ -457,7 +569,7 @@ def home_page(service: AppService, native: bool) -> None:
             skipped.set_visibility(False)
 
         with ui.card().classes("w-full gap-2"):
-            ui.label("Jobs").classes("text-h6")
+            ui.label("Jobs").classes("text-h6 step-h")
             ui.label(
                 "A jobs CSV (one row per posting, from the template), or add jobs one at a time "
                 "by hand. Jobs already imported are skipped."
@@ -667,9 +779,17 @@ def _ingested_text(report: RunOnceReport) -> str:
 
 # ---- screen: results ----
 
-# Light shades, half way between white and the full colour (Quasar positive / warning /
-# negative), so colour codes stay readable behind dark text.
-SHADE = {"green": "#90DCA2", "yellow": "#F8DF9B", "red": "#E07F8A"}
+# Soft fills with a darker outer edge of the same colour (Quasar positive / warning /
+# negative family), so colour codes stay readable behind dark text.
+SHADE = {"green": "#B7EBC4", "yellow": "#FBE7A1", "red": "#F4B6BD"}
+SHADE_EDGE = {"green": "#2E9D5B", "yellow": "#C99A12", "red": "#C0392B"}  # the darker outer edge
+
+
+def shade_style(shade: str) -> str:
+    """Soft fill with a darker outer edge of the same colour."""
+    return f"background-color: {SHADE[shade]}; border: 1.5px solid {SHADE_EDGE[shade]};"
+
+
 # Two steps lighter (about 75% toward white), for the Approve / Reject / Needs info buttons.
 SHADE_LIGHT = {"green": "#C8EED0", "yellow": "#FCEFCD", "red": "#F0BFC4"}
 TEXT_DARK = "#1D1D1D"
@@ -680,6 +800,12 @@ SCORE_SHADE = {
     "good": SHADE["green"],
     "some": SHADE["yellow"],
     "low": SHADE_LIGHT["yellow"],
+}
+EDGE_BY_FILL = {
+    SCORE_SHADE["strong"]: SHADE_EDGE["green"],
+    SCORE_SHADE["good"]: SHADE_EDGE["green"],
+    SCORE_SHADE["some"]: SHADE_EDGE["yellow"],
+    SCORE_SHADE["low"]: SHADE_EDGE["yellow"],
 }
 OUTCOME_SHADE = {"fits": "green", "check_partial": "yellow"}  # no match / not judged: none
 DECISION_SHADE = {
@@ -718,7 +844,10 @@ def _shade_button(text: str, shade: str, on_click: Callable, icon: str | None = 
         ui.button(text, icon=icon, on_click=on_click, color=None)
         .props("unelevated no-caps dense")
         .classes("px-3")
-        .style(f"background-color: {SHADE_LIGHT[shade]}; color: {TEXT_DARK};")
+        .style(
+            f"background-color: {SHADE_LIGHT[shade]}; color: {TEXT_DARK}; "
+            f"border: 1.5px solid {SHADE_EDGE[shade]};"
+        )
     )
 
 
@@ -876,8 +1005,8 @@ def _match_row(
         text, _ = DECISION_TEXT[review.decision]
         reason = f" ({REASON_TEXT[review.reason_code]})" if review.reason_code else ""
         with ui.row().classes("items-center gap-1"):
-            ui.label(text + reason).classes("text-sm px-2 py-0.5 rounded").style(
-                f"background-color: {SHADE[DECISION_SHADE[review.decision]]}; color: {TEXT_DARK};"
+            ui.label(text + reason).classes("text-sm px-3 py-0.5 rounded-full font-medium").style(
+                f"{shade_style(DECISION_SHADE[review.decision])} color: {TEXT_DARK};"
             )
             ui.button(icon="restart_alt", on_click=reset).props("flat round dense size=sm").mark(
                 "reset-decision", f"reset:{m.talent_id}"
@@ -927,7 +1056,7 @@ def _match_row(
             save(Decision.REJECTED, ReasonCode(chosen), note)
 
     fit = m.verdict.value == "fit"
-    box = ui.column().classes("w-full gap-2 rounded-lg border border-grey-4 p-3")
+    box = ui.column().classes("w-full gap-2 rounded-xl border border-grey-4 p-3")
     box.mark("contractor-box")
 
     def paint() -> None:
@@ -937,7 +1066,7 @@ def _match_row(
         if review is None:
             box.style(replace="border-left: 1px solid #BDBDBD; padding-left: calc(0.75rem + 3px);")
         else:
-            colour = SHADE[DECISION_SHADE[review.decision]]
+            colour = SHADE_EDGE[DECISION_SHADE[review.decision]]
             box.style(replace=f"border-left: 4px solid {colour}; padding-left: 0.75rem;")
 
     paint()
@@ -950,9 +1079,12 @@ def _match_row(
                 if view.headline:
                     ui.label(view.headline).classes("text-grey-8")
                 # Only the verdict chip is coloured (by score band); the score is plain text.
-                ui.label("fit" if fit else "partial").classes("text-xs px-2 rounded").style(
-                    f"background-color: {score_shade(service, m.fit_score, fit)}; "
-                    f"color: {TEXT_DARK};"
+                chip_fill = score_shade(service, m.fit_score, fit)
+                ui.label("fit" if fit else "partial").classes(
+                    "text-xs px-2 rounded-full font-semibold"
+                ).style(
+                    f"background-color: {chip_fill}; color: {TEXT_DARK}; "
+                    f"border: 1.5px solid {EDGE_BY_FILL.get(chip_fill, SHADE_EDGE['green'])};"
                 ).mark("verdict-chip")
                 if m.fit_score is not None:
                     ui.label(f"· score {m.fit_score}").classes("text-xs text-grey-8")
@@ -1094,8 +1226,12 @@ def scroll_to_card(page: str, job_id: str) -> None:
 
 
 def _chip(text: str, icon: str, shade: str | None = None) -> None:
-    style = f"background-color: {SHADE[shade]};" if shade else "background-color: #F5F5F5;"
-    ui.chip(text, icon=icon, color=None, text_color=None).props("dense square").classes(
+    style = (
+        shade_style(shade)
+        if shade
+        else "background-color: #F3EEFB; border: 1.5px solid #E0D5F3;"
+    )
+    ui.chip(text, icon=icon, color=None, text_color=None).props("dense").classes(
         "m-0 text-sm"
     ).style(f"{style} color: {TEXT_DARK};")
 
@@ -1131,11 +1267,16 @@ def _job_card_body(
     job = result.job
     text, _ = OUTCOME_TEXT[result.outcome]
     shade = OUTCOME_SHADE.get(result.outcome)
-    band = f"background-color: {SHADE[shade]};" if shade else "border-bottom: 1px solid #E0E0E0;"
+    band = (
+        f"background-color: {SHADE[shade]}; border-bottom: 2px solid {SHADE_EDGE[shade]};"
+        if shade
+        else "background-color: #F3EEFB; border-bottom: 1px solid #E0D5F3;"
+    )
     with (
         ui.card()
         .props(f'flat bordered id="{anchor("results", job.job_id)}"')
-        .classes("w-full p-0 gap-0 rounded-lg overflow-hidden")
+        .classes("w-full p-0 gap-0 rounded-2xl overflow-hidden")
+        .style(f"border: 2px solid {SHADE_EDGE[shade]};" if shade else "")
     ):
         with ui.row().classes("w-full items-center justify-between no-wrap px-4 py-3").style(band):
             job_title(job, "flex-1 min-w-0")
@@ -1228,10 +1369,10 @@ def results_page(service: AppService, native: bool) -> None:
 # (background, border) per state. Green: matched; red: analyzed, nobody fits (still open for
 # later runs); yellow: waiting to be analyzed; grey: completed or unavailable (never sent).
 JOB_STATE_STYLE: dict[JobState, tuple[str, str]] = {
-    "matched": ("#c7ffd2", "#4CAF50"),
-    "no_match": ("#ffcfcf", "#D32F2F"),
-    "waiting": ("#fff385", "#F9A825"),
-    "inactive": ("#EEEEEE", "#BDBDBD"),
+    "matched": ("#E4F8E9", "#2E9D5B"),
+    "no_match": ("#FCE3E6", "#C0392B"),
+    "waiting": ("#FFF4C7", "#D9A21B"),
+    "inactive": ("#F1EFF5", "#B9B2C9"),
 }
 JOB_STATE_TEXT: dict[JobState, str] = {
     "matched": "Scanned",
@@ -1405,7 +1546,7 @@ def _jobs_card(
     card = (
         ui.card()
         .props(f'flat id="{anchor("jobs", job.job_id)}"')
-        .classes("w-full px-4 py-3 gap-1 rounded-lg")
+        .classes("w-full px-4 py-3 gap-1 rounded-2xl")
     )
     card.style(f"background-color: {background}; border: 2px solid {border};")
     card.mark("job-card", f"job-state-{item.state}")
@@ -1601,9 +1742,8 @@ def jobs_page(service: AppService, native: bool) -> None:
 
 # ---- screen: talent ----
 
-# By available. Unavailable: a clearly grey card, distinct from the light purple page
-# (#EEEEEE was barely visible against it; user request).
-TALENT_STYLE = {True: ("#FFFFFF", "#D1C4E9"), False: ("#D6D6D6", "#9E9E9E")}
+# By available. Unavailable: a clearly grey card, distinct from the white sheet.
+TALENT_STYLE = {True: ("#FFFFFF", "#D9CEF0"), False: ("#ECE9F2", "#A79FBC")}
 
 
 def _talent_jobs_table(item: TalentOverview) -> None:
@@ -1634,7 +1774,7 @@ def _talent_card(
     service: AppService, item: TalentOverview, refresh: Callable[[], None], opened: set[str]
 ) -> None:
     background, border = TALENT_STYLE[item.available]
-    card = ui.card().props("flat").classes("w-full px-4 py-3 gap-1 rounded-lg")
+    card = ui.card().props("flat").classes("w-full px-4 py-3 gap-1 rounded-2xl")
     card.style(f"background-color: {background}; border: 2px solid {border};")
     card.mark("talent-card", f"talent-{'available' if item.available else 'unavailable'}")
 
@@ -2065,10 +2205,14 @@ def build_root(service: AppService, *, native: bool) -> Callable[[], None]:
     def root() -> None:
         _serve_resumes(service)  # here, not once at start: the test harness resets routes
         ui.page_title(APP_TITLE)
-        ui.colors(primary=THEME_PRIMARY)
-        ui.query("body").style(f"background-color: {THEME_BACKGROUND}")
-        with ui.header().classes("items-center"):
-            ui.label(APP_TITLE).classes("text-lg font-bold").mark("app-title")
+        ui.colors(primary=THEME_PRIMARY, secondary=THEME_ACCENT, accent=THEME_ACCENT)
+        ui.add_css(APP_CSS)
+        ui.add_head_html(FONT_LINK)
+        ui.add_body_html(NAV_JS)
+        ui.add_body_html('<div class="orbs"><i></i><i></i><i></i></div>')
+        ui.query("body").style(f"background: {THEME_BACKGROUND}; background-attachment: fixed;")
+        with ui.header().classes("items-center px-6 py-3 gap-1"):
+            ui.html(WORDMARK_HTML, sanitize=False).on("click", _go("/")).mark("app-title")
             ui.space()
             for text, path in (
                 ("Find matches", "/"),
@@ -2077,7 +2221,13 @@ def build_root(service: AppService, *, native: bool) -> Callable[[], None]:
                 ("Talent", "/talent"),
                 ("Settings", "/settings"),
             ):
-                ui.button(text, on_click=_go(path)).props("flat color=white")
+                ui.button(text, on_click=_go(path)).props(
+                    f'flat no-caps data-path="{path}"'
+                ).classes("nav-btn")
+        # The progress rail under the header: the infinity sign glides to the current screen.
+        ui.html(PROGRESS_HTML, sanitize=False).classes(
+            "w-full mx-auto max-w-[1600px] px-3 sm:px-6 pt-3"
+        )
         # NiceGUI's page wrapper is a left-aligned column sized to its content: make it full
         # width and centre each screen in it (the header is separate and keeps full width).
         ui.sub_pages(
@@ -2088,6 +2238,6 @@ def build_root(service: AppService, *, native: bool) -> Callable[[], None]:
                 "/talent": lambda: talent_page(service, native),
                 "/settings": lambda: settings_page(service, native),
             }
-        ).classes("w-full items-center")
+        ).classes("w-full items-center px-3 sm:px-6 py-5")
 
     return root
