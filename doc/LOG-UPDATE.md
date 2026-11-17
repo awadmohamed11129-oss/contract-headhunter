@@ -94,7 +94,7 @@ There was no way to back up the app or move it to another computer or person (a 
 Many job sites block automated reading, and saved pages can come out empty. A reviewer can now enter postings directly, either many at once in a CSV file or one at a time in a form, and the app stores them exactly as entered.
 
 ### How to use
-- **Jobs CSV:** on Find matches → Jobs, click **Get CSV template**. Fill one row per posting with the columns `url, job_title, company, location, work_mode, hours_per_week, pay, pay_type, posted_date, responsibility, qualification`, then pick the file with **Choose files…**.
+- **Jobs CSV:** on Find matches → Jobs, click **Get CSV template**. Fill one row per posting with the columns `url, job_title, company, contact_person, contact_email, location, work_mode, hours_per_week, pay, pay_type, posted_date, responsibility, qualification`, then pick the file with **Choose files…**.
   - **Required:** `url` and `job_title`. The link is how the app recognises the same job again.
   - **Several items in one cell:** `responsibility` and `qualification` take one item per line (Alt+Enter in Excel) or items separated by `|`.
   - **Work mode:** `on-site`, `hybrid` or `remote` (French accepted: `sur place`, `hybride`, `à distance`/`télétravail`), or empty.

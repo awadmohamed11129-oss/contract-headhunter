@@ -23,7 +23,6 @@ NORMALIZATION_FILE = "normalization.yaml"
 CANADA_LOCATIONS_FILE = "canada_locations.yaml"
 SOURCES_FILE = "sources.yaml"
 PROFESSIONS_FILE = "professions.yaml"
-PROFESSION_TITLES_FILE = "profession_titles.yaml"
 
 
 def _fold(text: str) -> str:
@@ -365,7 +364,6 @@ class NormalizationRules(StrictModel):
     # titles before they are embedded, like the seniority words.
     title_engagement_words: list[str] = []
     language_words: BilingualList
-    must_have_soft_markers: BilingualList = BilingualList(en=[], fr=[])
     flattened_text: FlattenedTextRules | None = None
 
     @field_validator("number_words")
@@ -538,40 +536,6 @@ def load_professions(config_dir: Path) -> Professions | None:
     """None when the file is missing: profession notes are optional."""
     path = config_dir / PROFESSIONS_FILE
     return Professions.model_validate(_read_yaml(path)) if path.exists() else None
-
-
-class ProfessionTitles(StrictModel):
-    """config/profession_titles.yaml (v1): title phrases that place a job in a profession
-    without any model. Keys must be professions.yaml names."""
-
-    version: int
-    titles: dict[str, list[str]]
-
-    @model_validator(mode="after")
-    def _phrases_unique(self) -> "ProfessionTitles":
-        owners: dict[str, str] = {}
-        for profession, phrases in self.titles.items():
-            for phrase in phrases:
-                owner = owners.setdefault(_fold(phrase), profession)
-                if owner != profession:
-                    raise ValueError(
-                        f"title phrase {phrase!r} is listed under both {owner!r} and {profession!r}"
-                    )
-        return self
-
-
-def load_profession_titles(config_dir: Path) -> ProfessionTitles:
-    """The title phrases, checked against the profession names in professions.yaml."""
-    titles = ProfessionTitles.model_validate(_read_yaml(config_dir / PROFESSION_TITLES_FILE))
-    professions = load_professions(config_dir)
-    if professions is None:
-        raise ValueError(f"{PROFESSION_TITLES_FILE} needs {PROFESSIONS_FILE}")
-    unknown = sorted(set(titles.titles) - set(professions.professions))
-    if unknown:
-        raise ValueError(
-            f"{PROFESSION_TITLES_FILE} names unknown profession(s): {', '.join(unknown)}"
-        )
-    return titles
 
 
 def load_canada_locations(config_dir: Path) -> CanadaLocations:

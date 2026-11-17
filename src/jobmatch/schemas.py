@@ -37,13 +37,6 @@ class RemoteType(StrEnum):
     UNKNOWN = "unknown"
 
 
-class RemotePreference(StrEnum):
-    ONSITE = "onsite"
-    HYBRID = "hybrid"
-    REMOTE = "remote"
-    ANY = "any"
-
-
 class EmploymentType(StrEnum):
     CONTRACT = "contract"
     PERMANENT = "permanent"
@@ -215,6 +208,9 @@ class Job(Record):
     # Added in 0.5: the HR contact's email from the posting text (normalize/contact.py).
     # Personal data: shown and copied on screen only; never logged or sent to Gemini.
     contact_email: str | None = None
+    # Added in 0.5: the contact's name, for jobs a reviewer entered (jobs CSV / form). Personal
+    # data, like contact_email.
+    contact_person: str | None = None
     # Added in 0.5 for jobs a reviewer entered (jobs CSV or the app's form):
     hours_per_week: float | None = Field(default=None, gt=0)
 

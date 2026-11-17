@@ -42,6 +42,8 @@ contractor workbook / CSV ──► contractors.csv ──► anonymous cards   
 
 ## Installation
 
+**Teammates:** follow [doc/RUN_LOCALLY.md](doc/RUN_LOCALLY.md) (tools, key, build, start the app, checks, troubleshooting). In short:
+
 ```
 cp .env.example .env      # then add GEMINI_API_KEY=
 docker compose build
@@ -83,6 +85,8 @@ tests/               unit and end-to-end tests (synthetic data, network always m
 | File | For |
 |---|---|
 | [doc/FIRST_LAUNCH.md](doc/FIRST_LAUNCH.md) | End users: installing the desktop app and first use |
+| [doc/RUN_LOCALLY.md](doc/RUN_LOCALLY.md) | Teammates: running the code on your own computer, step by step |
+| [doc/CONTRACTOR_IMPORT_FORMAT.md](doc/CONTRACTOR_IMPORT_FORMAT.md) | The contractor folder and CSV the app imports (for modules that prepare contractor data) |
 | [doc/quick_start.md](doc/quick_start.md) | Day-to-day use: commands, importing, running, reading results |
 | [doc/DEVELOPMENT.md](doc/DEVELOPMENT.md) | Technical details: layout, intake, normalization, matching, storage |
 | [doc/PROJECT_CONTEXT.md](doc/PROJECT_CONTEXT.md) | Goals, architecture and decisions |

@@ -253,13 +253,6 @@ seniority:
 # matching every "Fractional CFO/CMO". Bare "contract" stays: "contract manager" is a role.
 title_engagement_words: [fractional, interim, freelance, freelancer, par intérim, pigiste, à la pige, fractionnel, fractionnelle]
 
-# Must-have skills (matching): every skill in a Requirements line is a must-have, unless the
-# line uses one of these softer phrases. Bare "asset" is left out on purpose: it would also
-# match "digital asset management".
-must_have_soft_markers:
-  en: [familiarity, familiar with, preferred, an asset, considered an asset, a plus, nice to have, nice-to-have, willing to learn, exposure to, a bonus, ideally, desirable, an advantage, advantageous, optional, not required]
-  fr: [atout, un plus, souhaité, souhaitée, souhaitable, connaissance de base, connaissances de base, idéalement, un avantage, apprécié, appréciée, facultatif, facultative]
-
 # Function words used to tell English from French (must not overlap after accent folding).
 # Words shared with Spanish/Italian/Portuguese (de, en, un, la, que...) are left out on purpose,
 # so postings in other languages are not mistaken for French.
