@@ -170,13 +170,13 @@ def test_talent_list_and_toggle(talent: tuple[AppService, MarkerGemini], tmp_pat
     assert by_id["TAL-5"].toggled is not None
     assert by_id["TAL-5"].toggled.reviewer == "contractor import"
     assert not by_id["TAL-2"].available  # unchanged: the reviewer's toggle stays
-    # The reviewer can toggle again after the import. A hire makes them not available
-    # (user decisions 2026-11-10); undoing the hire restores what it was before.
+    # The reviewer can toggle again after the import. A hire leaves them available: they
+    # can take on several projects (user decision 2026-11-18).
     service.set_talent_availability("TAL-1", True)
     service.set_application("paste:1", "TAL-1", ApplicationStatus.HIRED)
     by_id = {t.talent_id: t for t in service.talent_overview()}
-    assert not by_id["TAL-1"].available
-    assert by_id["TAL-1"].toggled is not None and by_id["TAL-1"].toggled.reviewer == "hire"
+    assert by_id["TAL-1"].available
+    assert by_id["TAL-1"].toggled is not None and by_id["TAL-1"].toggled.reviewer == "reviewer"
     assert by_id["TAL-1"].jobs[0].status is ApplicationStatus.HIRED
     assert by_id["TAL-1"].jobs[0].job_open is False
     service.set_application("paste:1", "TAL-1", ApplicationStatus.IN_PROGRESS)

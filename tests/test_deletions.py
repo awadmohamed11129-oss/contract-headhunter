@@ -1,16 +1,18 @@
-"""Hires and deletions (user decisions 2026-11-10):
-- "Hired" makes the contractor not available; undoing the hire restores what it was before,
-  unless a reviewer changed it since.
+"""Hires and deletions (user decisions 2026-11-10, 2026-11-18):
+- "Hired" closes the job but leaves the contractor available: they can take on several
+  projects. Undoing a hire made under the old rule (which set them not available) restores
+  what it was before, unless a reviewer changed it since.
 - A closed job can be deleted; only a contractor hired for it still sees it on Talent.
 - A not-available contractor can be deleted with everything about them; a later import adds
   them back. Every rewritten CSV is backed up first. Fake Gemini, no network."""
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from jobmatch.app.service import AppError, AppService
-from jobmatch.schemas import ApplicationStatus, Decision
+from jobmatch.schemas import ApplicationStatus, Decision, JobAvailability, TalentAvailability
 from jobmatch.sources.resumes import resumes_dir
 from test_app_ui import run_ui
 from test_resumes import pdf
@@ -25,16 +27,39 @@ def available(service: AppService) -> dict[str, bool]:
     return {t.talent_id: t.available for t in service.talent_overview()}
 
 
-def test_hire_and_undo(talent) -> None:  # noqa: ANN001, F811
+def test_hire_keeps_contractor_available(talent) -> None:  # noqa: ANN001, F811
     service, _ = talent
     approve(service, "TAL-1")
     service.set_application("paste:1", "TAL-1", ApplicationStatus.HIRED)
-    assert not available(service)["TAL-1"]
-    # The reviewer switches them back on themselves: undoing the hire leaves that alone.
-    service.set_talent_availability("TAL-1", True, "Free again next month")
-    service.set_application("paste:1", "TAL-1", ApplicationStatus.IN_PROGRESS)
+    assert available(service)["TAL-1"]  # free for other projects
     rows = [t for t in service._loader().talent_availability.list_all() if t.talent_id == "TAL-1"]
-    assert [r.reviewer for r in rows] == ["hire", "reviewer"]
+    assert rows == []  # a hire writes no availability row
+    job = service._loader().jobs.get("paste:1")
+    assert job is not None and job.availability is JobAvailability.COMPLETED  # still closes
+    # Undoing the hire leaves availability alone too.
+    service.set_application("paste:1", "TAL-1", ApplicationStatus.IN_PROGRESS)
+    assert available(service)["TAL-1"]
+
+
+def test_undoing_old_rule_hire_restores_availability(talent) -> None:  # noqa: ANN001, F811
+    service, _ = talent
+    approve(service, "TAL-1")
+    service.set_application("paste:1", "TAL-1", ApplicationStatus.HIRED)
+    # A row the old rule wrote for this hire (before 2026-11-18).
+    service._loader().talent_availability.add_many(
+        [
+            TalentAvailability(
+                talent_id="TAL-1",
+                available=False,
+                note="Hired for Data analyst (paste:1)",
+                reviewer="hire",
+                changed_at=datetime.now(UTC),
+            )
+        ]
+    )
+    assert not available(service)["TAL-1"]
+    service.set_application("paste:1", "TAL-1", ApplicationStatus.IN_PROGRESS)
+    assert available(service)["TAL-1"]
 
 
 def test_delete_closed_job_keeps_it_on_talent(talent) -> None:  # noqa: ANN001, F811

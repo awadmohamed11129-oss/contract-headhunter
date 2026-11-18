@@ -312,9 +312,10 @@ class TalentAvailability(Record):
     Without a row, availability follows the contractor's own profile (`contract`). A row
     overrides it either way, until a contractor import brings a new or changed profile for
     them: the import then writes a row with the profile's answer, which takes precedence
-    (user decisions 2026-11-09). A hire sets it to not available (reviewer "hire"); undoing
-    the hire restores the value before it (reviewer "hire undone"), unless a reviewer changed
-    it in between (user decisions 2026-11-10)."""
+    (user decisions 2026-11-09). A hire does not change it: a contractor can take on several
+    projects (user decision 2026-11-18). Rows with reviewer "hire" come from the old rule;
+    undoing such a hire restores the value before it (reviewer "hire undone"), unless a
+    reviewer changed it in between."""
 
     talent_id: NonEmptyStr
     available: bool

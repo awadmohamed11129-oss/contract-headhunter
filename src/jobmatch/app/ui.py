@@ -1576,7 +1576,7 @@ def _candidates_table(service: AppService, item: JobOverview, refresh: Callable[
             def save(t: str = c.talent_id, box: ui.select = choice) -> None:
                 status = ApplicationStatus(box.value)
                 note = (
-                    "Saved. The job is marked completed and the contractor not available."
+                    "Saved. The job is marked completed."
                     if status is ApplicationStatus.HIRED
                     else "Saved."
                 )

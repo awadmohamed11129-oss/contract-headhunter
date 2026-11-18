@@ -71,7 +71,7 @@ from jobmatch.storage.loader import create_loader
 from jobmatch.storage.repositories import DataLoader
 
 REVIEWER_ENV = "JOBMATCH_REVIEWER"
-HIRE_REVIEWER = "hire"  # the availability row a hire writes (user decisions 2026-11-10)
+HIRE_REVIEWER = "hire"  # availability rows hires wrote before 2026-11-18 (no longer written)
 HIRE_UNDONE_REVIEWER = "hire undone"
 DEFAULT_REVIEWER = "reviewer"
 JOB_SUFFIXES = (".txt", *SAVED_SUFFIXES, JOB_CSV_SUFFIX)
@@ -809,8 +809,8 @@ class AppService:
     ) -> TalentAvailability:
         """The reviewer's "Available for matching" toggle, after checking with the
         contractor. Overrides the profile's own answer either way. Appended to
-        talent_availability.csv (the latest counts). Set automatically only by a hire
-        (set_application)."""
+        talent_availability.csv (the latest counts). A hire never changes it (user decision
+        2026-11-18)."""
         loader = self._loader()
         if talent_id not in self._profiles(loader):
             raise AppError(f"{talent_id} is not in the contractor list any more.")
@@ -841,9 +841,10 @@ class AppService:
     ) -> None:
         """Save an approved candidate's application status (Jobs screen). "rejected"
         (rejection or ghosted) takes them out of consideration for this job; "hired" marks
-        the job completed and the contractor not available (user decisions 2026-11-10);
-        moving away from "hired" restores their availability from before the hire, unless
-        a reviewer changed it since. Appended to applications.csv (the latest counts)."""
+        the job completed. A hire leaves the contractor available: they can take on several
+        projects if their time allows (user decision 2026-11-18). Moving away from "hired"
+        still restores availability a hire set under the old rule (before 2026-11-18),
+        unless a reviewer changed it since. Appended to applications.csv (the latest counts)."""
         loader = self._loader()
         job = loader.jobs.get(job_id)
         if job is None:
@@ -871,18 +872,6 @@ class AppService:
         if status is ApplicationStatus.HIRED:
             if job.availability is JobAvailability.AVAILABLE:
                 self.set_job_availability(job_id, "completed", now)
-            if not was_hired:
-                loader.talent_availability.add_many(
-                    [
-                        TalentAvailability(
-                            talent_id=talent_id,
-                            available=False,
-                            note=f"Hired for {title} ({job_id})",
-                            reviewer=HIRE_REVIEWER,
-                            changed_at=now,
-                        )
-                    ]
-                )
         elif was_hired:
             self._undo_hire_availability(loader, job_id, talent_id, title, now)
 

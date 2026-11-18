@@ -4,6 +4,19 @@ What each change solves, for the team. Newest first. Add an entry with every com
 
 ---
 
+## 2026-11-18 · A hire no longer makes the contractor unavailable
+
+### What this solves
+- A contractor can work on several projects if their time allows. Before, setting an application to **Hired** switched their "Available for matching" off, so they stopped getting matched to other jobs.
+
+### How to use
+- **Hired** still marks the job completed (off Results, never scanned again). The contractor stays available.
+- To stop matching someone who is fully booked, turn off **Available for matching** on the Talent screen yourself.
+- Contractors made unavailable by a hire under the old rule stay that way. Undoing that hire (setting the status back to anything else) still restores their earlier availability, unless a reviewer changed it since. Otherwise switch them back on the Talent screen.
+- No new packages, columns or files.
+
+---
+
 ## 2026-11-17 · Release v1.0.0
 
 ### What this solves
