@@ -13,7 +13,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel
+from filelock import FileLock, Timeout
+from pydantic import BaseModel, ValidationError
 
 from jobmatch import secrets_file
 from jobmatch.backup import (
@@ -32,7 +33,7 @@ from jobmatch.llm.payload import ACTIVE_STATUSES, is_active
 from jobmatch.llm.provider import LLMProvider
 from jobmatch.llm.rounds import latest_applications, latest_reviews, rank
 from jobmatch.llm.usage import RunCheck, UsageLedger
-from jobmatch.pipeline import RunOnceReport, run_once
+from jobmatch.pipeline import PIPELINE_LOCK_FILE, RunOnceReport, run_once
 from jobmatch.schemas import (
     Application,
     ApplicationStatus,
@@ -46,9 +47,20 @@ from jobmatch.schemas import (
     RemovedJob,
     Review,
     TalentAvailability,
+    TalentNote,
 )
-from jobmatch.shortlists import is_available, latest_toggles, pair_states, sync_rounds
-from jobmatch.sources.contractor_upsert import ContractorFileError, read_contractor_file
+from jobmatch.shortlists import (
+    is_available,
+    latest_toggles,
+    mark_changes,
+    pair_states,
+    sync_rounds,
+)
+from jobmatch.sources.contractor_upsert import (
+    ContractorFileError,
+    read_contractor_file,
+    upsert_contractors,
+)
 from jobmatch.sources.job_csv import (
     FORM_MARK,
     JOB_CSV_SUFFIX,
@@ -63,6 +75,7 @@ from jobmatch.sources.resumes import (
     match_ids,
     read_contractor_folder,
     resumes_dir,
+    store_resume,
     stored_resume,
 )
 from jobmatch.sources.saved_files import SAVED_SUFFIXES
@@ -172,6 +185,15 @@ class TalentOverview(BaseModel):
     toggled: TalentAvailability | None  # the reviewer's latest toggle, if any
     jobs: list[TalentJob] = []  # approved for, best known first
     has_resume: bool = False
+    note: str | None = None  # the reviewer's latest note (Profile pop-up), read-only here
+
+
+class ProfileSaved(BaseModel):
+    """What a Save in the Profile pop-up did."""
+
+    profile_changed: bool  # the contractor's row in the contractor list was rewritten
+    rescan: bool  # what Gemini sees changed: matched again on the next run
+    note_changed: bool
 
 
 class JobOverview(BaseModel):
@@ -740,9 +762,9 @@ class AppService:
 
     def talent_overview(self) -> list[TalentOverview]:
         """Every contractor in the contractor list, with their availability and the jobs
-        they were approved for: available A–Z by name, then not available A–Z. Read-only
-        except for the availability toggle (profiles change only through the intake form
-        and the next contractor import)."""
+        they were approved for: available A–Z by name, then not available A–Z. The note is
+        the latest one saved in the Profile pop-up; before any, the note of the latest
+        availability change (where notes were written until 2026-11-18)."""
         loader = self._loader()
         profiles = list(self._profiles(loader).values())
         latest = latest_toggles(loader)
@@ -753,6 +775,7 @@ class AppService:
         for r in loader.removed_jobs.list_all():
             gone.setdefault(r.talent_id, []).append(r)
         with_resume = self._with_resume()
+        notes = self._latest_notes(loader)
         out: list[TalentOverview] = []
         for p in profiles:
             toggle = latest.get(p.talent_id)
@@ -802,10 +825,81 @@ class AppService:
                     toggled=toggle,
                     jobs=approved,
                     has_resume=p.talent_id in with_resume,
+                    note=notes.get(p.talent_id, toggle.note if toggle else None),
                 )
             )
         out.sort(key=lambda t: (not t.available, t.name.casefold(), t.talent_id))
         return out
+
+    def _latest_notes(self, loader: DataLoader) -> dict[str, str | None]:
+        """talent ID -> the latest note saved in the Profile pop-up (None: cleared)."""
+        out: dict[str, str | None] = {}
+        rows = sorted(loader.talent_notes.list_all(), key=lambda n: n.noted_at)
+        for row in rows:  # stable sort: file order breaks ties, later rows win
+            out[row.talent_id] = row.note
+        return out
+
+    def save_profile(
+        self,
+        talent_id: str,
+        values: dict[str, object],
+        note: str | None,
+        now: datetime | None = None,
+    ) -> ProfileSaved:
+        """The Save button of the Profile pop-up (Talent screen, user decisions 2026-11-18):
+        the edited fields go to the contractor's row in the app's contractor list (backed up
+        first), checked like an imported row; nothing is saved if a field is wrong. When
+        what Gemini sees changed, the contractor is marked to be matched again, as after an
+        import. A later contractor import with other values for them replaces the edit. The
+        note goes to talent_notes.csv. talent_id cannot change (the résumé is named by it)."""
+        loader = self._loader()
+        profiles = self._profiles(loader)
+        before = profiles.get(talent_id)
+        if before is None:
+            raise AppError(f"{talent_id} is not in the contractor list any more.")
+        data = before.model_dump()
+        data.update({k: v for k, v in values.items() if k in data and k != "talent_id"})
+        try:
+            after = ContractorProfile.model_validate(data)
+        except ValidationError as exc:
+            problems = [
+                f"{'.'.join(str(part) for part in e['loc'][:1]) or 'profile'}: {e['msg']}"
+                for e in exc.errors()
+            ]
+            raise AppError("Not saved. " + "; ".join(problems)) from None
+        now = now or datetime.now(UTC)
+        saved = ProfileSaved(profile_changed=after != before, rescan=False, note_changed=False)
+        if saved.profile_changed:
+            try:
+                with FileLock(str(self.data_dir / PIPELINE_LOCK_FILE), timeout=1):
+                    stored = list(profiles.values())
+                    report = upsert_contractors([after], loader.contractors)
+                    marked = mark_changes(loader, stored, report, self.llm.payload, now)
+                    saved.rescan = bool(marked)
+            except Timeout:
+                raise AppError(
+                    "A run is going: save again when it ends (nothing was saved)."
+                ) from None
+        text = (note or "").strip() or None
+        current = self._latest_notes(loader)
+        toggle = latest_toggles(loader).get(talent_id)
+        shown = current.get(talent_id, toggle.note if toggle else None)
+        if text != shown:
+            loader.talent_notes.add_many(
+                [TalentNote(talent_id=talent_id, note=text, reviewer=self.reviewer(), noted_at=now)]
+            )
+            saved.note_changed = True
+        return saved
+
+    def save_resume(self, talent_id: str, data: bytes, now: datetime | None = None) -> str:
+        """A résumé picked on the Talent screen (user request 2026-11-18), stored as
+        <talent_id>.pdf: "added", "replaced" (old copy kept in old/) or "unchanged"."""
+        if talent_id not in self._profiles(self._loader()):
+            raise AppError(f"{talent_id} is not in the contractor list any more.")
+        try:
+            return store_resume(self.data_dir, talent_id, data, now or datetime.now(UTC))
+        except ValueError as exc:
+            raise AppError(str(exc)) from None
 
     def set_talent_availability(
         self, talent_id: str, available: bool, note: str = "", now: datetime | None = None
@@ -959,7 +1053,7 @@ class AppService:
 
     def delete_talent(self, talent_id: str) -> None:
         """Delete a contractor and everything about them (user decisions 2026-11-10): their
-        row in the app's contractor list, résumé (and old copies), availability, change
+        row in the app's contractor list, résumé (and old copies), availability, notes, change
         marks, scans, round slots, shortlist rows, the decisions on those rows, application
         statuses and removed-job rows. Only when they are not available for matching. Each
         CSV is backed up before it is rewritten (CLAUDE.md); the picked contractor folder is
@@ -970,7 +1064,7 @@ class AppService:
             raise AppError(f"{talent_id} is not in the contractor list any more.")
         toggle = latest_toggles(loader).get(talent_id)
         if is_available(profile, toggle.available if toggle else None):
-            raise AppError("Mark them not available (and save) before deleting them.")
+            raise AppError("Mark them not available before deleting them.")
         matches = {m.match_id for m in loader.llm_matches.list_all() if m.talent_id == talent_id}
         mine = lambda r: r.talent_id == talent_id  # noqa: E731
         loader.reviews.remove_where(lambda r: r.match_id in matches)
@@ -981,6 +1075,7 @@ class AppService:
         loader.removed_jobs.remove_where(mine)
         loader.contractor_changes.remove_where(mine)
         loader.talent_availability.remove_where(mine)
+        loader.talent_notes.remove_where(mine)
         folder = resumes_dir(self.data_dir)
         (folder / f"{talent_id}{RESUME_SUFFIX}").unlink(missing_ok=True)
         old = re.compile(rf"{re.escape(talent_id)}-\d{{8}}T\d{{6}}Z{RESUME_SUFFIX}")

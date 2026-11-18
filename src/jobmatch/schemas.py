@@ -305,6 +305,18 @@ class RemovedJob(Record):
     removed_by: NonEmptyStr
 
 
+class TalentNote(Record):
+    """The reviewer's note on one contractor, written in the Profile pop-up on the Talent
+    screen (data/talent_notes.csv, append-only, the latest counts; an empty note clears
+    it). Kept apart from the contractor list, which a contractor import replaces row by row
+    (user decisions 2026-11-18). Personal data: shown on screen only, never logged."""
+
+    talent_id: NonEmptyStr
+    note: str | None = None
+    reviewer: NonEmptyStr
+    noted_at: AwareDatetime
+
+
 class TalentAvailability(Record):
     """The reviewer's "Available for matching" toggle for one contractor (Talent screen;
     data/talent_availability.csv, append-only, the latest counts).

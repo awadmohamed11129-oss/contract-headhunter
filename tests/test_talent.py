@@ -207,10 +207,9 @@ def test_talent_screen(talent: tuple[AppService, MarkerGemini]) -> None:
         await user.should_see("Person 3")
         user.find(marker="talent-search").clear()
         await user.should_see("Person 1")
-        user.find(marker="available:TAL-2").click()  # the switch: on -> off
-        user.find(marker="note:TAL-2").type("Sur un mandat")
-        user.find(marker="save-available:TAL-2").click()
-        await user.should_see("Sur un mandat", marker="talent-note")
+        user.find(marker="available:TAL-2").click()  # the switch: on -> off, saved at once
+        await user.should_see("Saved: not available.")
+        await user.should_see(marker="talent-set")
         # Opened again: the not available ones at the bottom, A–Z (Person 2, then 5).
         await user.open("/talent")
         await user.should_see("3 available for matching · 2 not available")

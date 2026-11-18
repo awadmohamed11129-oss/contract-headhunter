@@ -164,6 +164,37 @@ def store_resumes(
     return report
 
 
+def store_resume(data_dir: Path, talent_id: str, data: bytes, now: datetime) -> str:
+    """One résumé uploaded on the Talent screen (user request 2026-11-18), stored as
+    <talent_id>.pdf: "added", "replaced" (the old copy moved to old/ with a timestamp first,
+    never deleted) or "unchanged". The caller checks the talent ID is in the list. The
+    uploaded file's own name is never used (it may hold the person's name)."""
+    if not data.startswith(PDF_MAGIC):
+        raise ValueError("That file is not a PDF.")
+    folder = resumes_dir(data_dir)
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = folder / f"{talent_id}{RESUME_SUFFIX}"
+    outcome = "added"
+    if dest.exists():
+        if hashlib.sha256(data).hexdigest() == _digest(dest):
+            return "unchanged"
+        old = folder / "old"
+        old.mkdir(exist_ok=True)
+        os.replace(dest, old / f"{talent_id}-{now:%Y%m%dT%H%M%SZ}{RESUME_SUFFIX}")
+        outcome = "replaced"
+    fd, tmp = tempfile.mkstemp(dir=folder, prefix=f".{talent_id}-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as out:
+            out.write(data)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(tmp, dest)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    return outcome
+
+
 def stored_resume(data_dir: Path, talent_id: str, known_ids: Iterable[str]) -> Path | None:
     """The stored résumé of a contractor in the list, if any. The path is built only from an
     ID found in the list, never from the caller's text."""

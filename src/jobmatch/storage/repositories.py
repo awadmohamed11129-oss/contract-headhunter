@@ -21,6 +21,7 @@ from jobmatch.schemas import (
     Run,
     ScanRecord,
     TalentAvailability,
+    TalentNote,
 )
 
 
@@ -124,6 +125,7 @@ class DataLoader(Protocol):
     job_rounds: AppendRepository[RoundEvent]
     applications: AppendRepository[Application]
     talent_availability: AppendRepository[TalentAvailability]
+    talent_notes: AppendRepository[TalentNote]
     contractor_changes: AppendRepository[ContractorChange]
     removed_jobs: AppendRepository[RemovedJob]
     contractors: ContractorProfileRepository

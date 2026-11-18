@@ -15,6 +15,10 @@ storage:
   lock_timeout_seconds: 30 # GUESS: how long a run or the review UI waits for a CSV lock
   # csv: the files under data/ (today). mongodb: not available yet (storage/loader.py).
   backend: csv
+  # The app deletes its automatic backups (CSV copies made before a rewrite, removed Gemini
+  # results) older than this when it starts (user request 2026-11-18). Exports, résumé
+  # copies and reset/clean-up folders are never deleted.
+  backup_retention_days: 30
 
 normalize:
   # TODO (reminder): 999 effectively turns the stale filter off, on purpose, while the

@@ -4,6 +4,46 @@ What each change solves, for the team. Newest first. Add an entry with every com
 
 ---
 
+## 2026-11-18 · Old automatic backups are deleted at start-up
+
+### What this solves
+- The app keeps a copy of a CSV file every time it rewrites one, so `data/backups/` kept growing.
+
+### How to use
+- Nothing to do: when the app starts, it deletes its **automatic** backups older than 30 days (`storage.backup_retention_days` in `config/settings.yaml`):
+  - `data/backups/<table>.<timestamp>Z.csv` (copies made before a rewrite);
+  - `data/backups/removed-judgments/<timestamp>Z-<job>/` (Gemini's results of deleted jobs);
+  - `data/contractors/backups/` and `data/eval/backups/`.
+- The age comes from the timestamp in the name. Files without the app's timestamp are left alone.
+- **Never deleted:** exports and uploaded backups (`data/backups/exports/`, `uploads/`), `reset-*` and `cleanup-*` folders, backups named by hand, and old résumés in `resumes/old/`.
+- **The deletion is permanent.** To keep a backup longer, copy it elsewhere or make an Export.
+- The app's log records how many were deleted (counts only).
+
+---
+
+## 2026-11-18 · Talent screen: edit profiles, notes in the profile, add or replace résumés
+
+### What this solves
+- Profiles could only change through the next contractor import, and a missing résumé could only be added by importing the folder again.
+- The card's Save button was easy to forget after flipping the availability switch.
+
+### How to use
+- **Availability:** flipping the switch on a contractor card saves at once ("Saved: not available."). The Save button is gone.
+- **Profile › Edit:** the fields become editable; lists take one item per line. **Save** checks every field like an imported row and saves nothing if one is wrong.
+  - The app's contractor list (`data/contractors/contractors.csv`) is backed up before each save.
+  - When something Gemini sees changed, the contractor is matched again on the next **Find matches** run (this uses Gemini calls on that run). A name change alone doesn't.
+  - `talent_id` can't be edited (the résumé is named by it).
+  - **A later contractor import with other values for that contractor replaces the edit**: fix the source file too.
+- **Note:** written in the Profile pop-up and saved with its Save button (new `data/talent_notes.csv`, append-only, latest counts; an empty note clears it). The card shows it read-only. Notes saved earlier with an availability change still show until a new one is saved.
+- **Résumé:**
+  - No résumé on file: the grey button now opens a PDF picker; the file is stored right away as `<talent_id>.pdf`.
+  - Résumé on file: the viewer has **Replace résumé**. After picking a file, **Save** (with Cancel) appears; only Save replaces the stored file. The old copy moves to `data/contractors/resumes/old/` with a timestamp.
+  - Only real PDFs are accepted. The picked file's own name is never kept or logged.
+  - The Results screen's Résumé and Profile buttons stay view-only.
+- No new packages. One new data file (`talent_notes.csv`), created on the first note; exports and backups include it.
+
+---
+
 ## 2026-11-18 · Plain-language progress box on Find matches
 
 ### What this solves

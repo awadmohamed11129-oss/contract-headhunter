@@ -134,6 +134,9 @@ def main(argv: list[str] | None = None) -> None:
     secrets_file.load_into_environ(env_path)  # names only are returned; values never printed
     settings = load_settings(config_dir, data_root=root)
     configure_logging(settings.logging.level)
+    from jobmatch.backup_retention import remove_old_backups
+
+    remove_old_backups(settings.paths.data_dir, settings.storage.backup_retention_days)
 
     from nicegui import ui
 

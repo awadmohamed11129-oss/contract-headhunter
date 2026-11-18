@@ -60,6 +60,7 @@ class CsvDataLoader:
         self.job_rounds = CsvAppendRepository(self.store.job_rounds)
         self.applications = CsvAppendRepository(self.store.applications)
         self.talent_availability = CsvAppendRepository(self.store.talent_availability)
+        self.talent_notes = CsvAppendRepository(self.store.talent_notes)
         self.contractor_changes = CsvAppendRepository(self.store.contractor_changes)
         self.removed_jobs = CsvAppendRepository(self.store.removed_jobs)
 

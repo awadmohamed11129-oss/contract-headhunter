@@ -50,6 +50,8 @@ class StorageSettings(StrictModel):
     # Where records are kept (storage/loader.py create_loader). "mongodb" is a placeholder
     # until hosting is decided; connection details will come from .env, never from here.
     backend: Literal["csv", "mongodb"] = "csv"
+    # Automatic backups older than this are deleted when the app starts (backup_retention.py).
+    backup_retention_days: int = Field(gt=0)
 
 
 class NormalizeSettings(StrictModel):

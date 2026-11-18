@@ -71,6 +71,7 @@ The import is an upsert keyed on `talent_id`:
 - **Known `talent_id` with any difference:** the stored row is replaced.
   - If something Gemini sees changed, the contractor is matched again against open jobs.
   - Changes to `talent_name` alone don't trigger matching again.
+- **Edits made in the app are overwritten.** A reviewer can edit a profile on the Talent screen (Profile › Edit › Save). The next import that has other values for that `talent_id` replaces the whole row, edits included. Fix the source data too, or the edit is lost. Reviewer notes are kept apart and survive imports.
 - **Contractor missing from the file:** kept, not removed. Removing someone is a manual Delete on the Talent screen.
 - **Same `talent_id` twice in the file:** the file is rejected.
 - **Empty `talent_id`:**

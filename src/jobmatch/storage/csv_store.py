@@ -42,6 +42,7 @@ from jobmatch.schemas import (
     Run,
     ScanRecord,
     TalentAvailability,
+    TalentNote,
 )
 from jobmatch.storage.files import atomic_open, atomic_write_text
 
@@ -512,6 +513,7 @@ class CsvStore:
         self.talent_availability = table(
             "talent_availability.csv", TalentAvailability, TableMode.APPEND_ONLY
         )
+        self.talent_notes = table("talent_notes.csv", TalentNote, TableMode.APPEND_ONLY)
         # 0.5: contractor imports that changed what Gemini sees (rescan only those).
         self.contractor_changes = table(
             "contractor_changes.csv", ContractorChange, TableMode.APPEND_ONLY
@@ -530,6 +532,7 @@ class CsvStore:
             self.job_rounds,
             self.applications,
             self.talent_availability,
+            self.talent_notes,
             self.contractor_changes,
             self.removed_jobs,
         ]

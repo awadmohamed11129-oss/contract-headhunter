@@ -225,9 +225,10 @@ def test_talent_card_shows_the_resume(
     async def scenario(user) -> None:  # noqa: ANN001
         await user.open("/talent")
         await user.should_see(marker="resume:TAL-CAN-0001")
-        await user.should_see(marker="resume:TAL-CAN-0002")  # shown, but greyed out
+        await user.should_see(marker="resume:TAL-CAN-0002")  # grey, but picks a PDF here
         [none] = user.find(marker="resume:TAL-CAN-0002").elements
-        assert not none.enabled
+        assert none.enabled and none.props.get("color") == "grey-7"
+        assert len(user.find(marker="resume:TAL-CAN-0002-upload").elements) == 1
         [one] = user.find(marker="resume:TAL-CAN-0001").elements
         assert one.enabled
         user.find(marker="resume:TAL-CAN-0001").click()

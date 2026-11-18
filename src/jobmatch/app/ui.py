@@ -9,8 +9,9 @@ Screens:
               an Unavailable toggle, Reopen and Delete for closed jobs (a job is completed
               when an application is set to Hired).
 - "/talent"   Every contractor, with the "Available for matching" toggle (the reviewer's
-              call), the jobs they were approved for and their résumé. Profiles are
-              read-only here.
+              call, saved when flipped), the jobs they were approved for, their
+              profile (editable, with the reviewer's note) and their résumé (add or
+              replace a PDF).
 - "/settings" Gemini key (never shown back), reviewer name, data folder.
 
 The run is blocking, so it goes to a worker thread (run.io_bound). Its progress lines reach
@@ -61,6 +62,7 @@ from jobmatch.pipeline import PipelineError, RunOnceReport
 from jobmatch.schemas import (
     ApplicationStatus,
     Commitment,
+    ContractorProfile,
     Decision,
     Job,
     JobAvailability,
@@ -1004,34 +1006,152 @@ def _shade_button(text: str, shade: str, on_click: Callable, icon: str | None = 
     )
 
 
-def _profile_dialog(service: AppService, talent_id: str, name: str | None) -> None:
+# Profile fields edited as several lines (one item per line) or a long text.
+_LONG_TEXT = {"executive_summary"}
+
+
+def _field_kind(column: str) -> str:
+    """How the Profile pop-up edits a column: "list", "bool", "number" or "text"."""
+    annotation = ContractorProfile.model_fields[column].annotation
+    text = str(annotation)
+    if "list" in text:
+        return "list"
+    if annotation is bool:
+        return "bool"
+    if "float" in text or "int" in text:
+        return "number"
+    return "text"
+
+
+def _profile_dialog(
+    service: AppService,
+    talent_id: str,
+    name: str | None,
+    *,
+    editable: bool = False,
+    note: str | None = None,
+    on_saved: Callable[[], None] | None = None,
+) -> None:
+    """The contractor's stored profile. On the Talent screen (editable, user decisions
+    2026-11-18): Edit turns the fields into inputs, the Note can be written, and Save
+    stores both (service.save_profile). Read-only elsewhere (Results)."""
     try:
         fields = service.contractor_fields(talent_id)
     except AppError as exc:
         ui.notify(str(exc), type="warning")
         return
+    state = {"editing": False}
+    inputs: dict[str, ui.element] = {}
+
     with (
         ui.dialog() as dialog,
-        ui.card().style("width: 90vw; max-width: 90vw; max-height: 80vh"),
+        ui.card().style("width: 90vw; max-width: 90vw; max-height: 85vh"),
     ):
-        with ui.row().classes("w-full items-center justify-between"):
+        with ui.row().classes("w-full items-center justify-between no-wrap"):
             ui.label(f"Profile: {name or talent_id}").classes("text-h6")
-            ui.button(icon="close", on_click=dialog.close).props("flat round dense")
-        ui.label("From the contractor list (read-only).").classes("text-xs text-grey-7")
-        with (
-            ui.scroll_area().classes("w-full h-[65vh]"),
-            ui.grid(columns="minmax(10rem, auto) 1fr").classes("w-full gap-x-4 gap-y-1"),
-        ):
-            ui.label("Column").classes("font-bold border-b")
-            ui.label("Value").classes("font-bold border-b")
-            for column, values in fields:
-                ui.label(column).classes("font-mono text-sm text-grey-8 border-b py-1")
-                with ui.column().classes("gap-0 border-b py-1"):
-                    if not values:
-                        ui.label("—").classes("text-grey-6")
-                    for value in values:
-                        ui.label(value).classes("text-sm whitespace-pre-wrap")
+            with ui.row().classes("items-center gap-2 no-wrap"):
+                if editable:
+                    edit_button = (
+                        ui.button("Edit", icon="edit", on_click=lambda: start_editing())
+                        .props("outline dense no-caps")
+                        .classes("bg-white pl-1 pr-3")
+                        .mark("profile-edit")
+                    )
+                    ui.button("Save", icon="save", on_click=lambda: save()).props(
+                        "dense no-caps color=primary"
+                    ).classes("pl-1 pr-3").mark("profile-save")
+                ui.button(icon="close", on_click=dialog.close).props("flat round dense")
+        hint = ui.label("From the contractor list.").classes("text-xs text-grey-7")
+        if editable:
+            note_box = (
+                ui.textarea("Note", value=note or "")
+                .props("outlined dense autogrow bg-color=white")
+                .classes("w-full")
+                .mark("profile-note")
+            )
+
+        @ui.refreshable
+        def grid() -> None:
+            with ui.grid(columns="minmax(10rem, auto) 1fr").classes("w-full gap-x-4 gap-y-1"):
+                ui.label("Column").classes("font-bold border-b")
+                ui.label("Value").classes("font-bold border-b")
+                for column, values in fields:
+                    ui.label(column).classes("font-mono text-sm text-grey-8 border-b py-1")
+                    with ui.column().classes("gap-0 border-b py-1"):
+                        if state["editing"] and column != "talent_id":
+                            inputs[column] = _field_input(column, values)
+                            continue
+                        if not values:
+                            ui.label("—").classes("text-grey-6")
+                        for value in values:
+                            ui.label(value).classes("text-sm whitespace-pre-wrap")
+
+        with ui.scroll_area().classes("w-full h-[60vh]"):
+            grid()
+
+    def start_editing() -> None:
+        state["editing"] = True
+        edit_button.disable()
+        hint.text = (
+            "Editing. Lists take one item per line. Save checks every field; a later "
+            "contractor import with other values for this contractor replaces the edit."
+        )
+        grid.refresh()
+
+    def save() -> None:
+        values = {c: _field_value(c, e) for c, e in inputs.items()} if state["editing"] else {}
+        try:
+            saved = service.save_profile(talent_id, values, note_box.value)
+        except RUN_ERRORS as exc:
+            ui.notify(str(exc), type="warning", multi_line=True)
+            return
+        if not (saved.profile_changed or saved.note_changed):
+            ui.notify("Nothing changed.")
+        else:
+            ui.notify(
+                "Saved. They will be matched again on the next Find matches run."
+                if saved.rescan
+                else "Saved.",
+                type="positive",
+            )
+        dialog.close()
+        if on_saved:
+            on_saved()
+
     dialog.open()
+
+
+def _field_input(column: str, values: list[str]) -> ui.element:
+    """One editable profile field (Profile pop-up)."""
+    kind = _field_kind(column)
+    mark = f"profile-field:{column}"
+    if kind == "bool":
+        return ui.switch(value=(values or [""])[0].lower() in ("true", "1", "yes")).mark(mark)
+    if kind == "number":
+        number = float(values[0]) if values else None
+        return ui.number(value=number, min=0).props("dense outlined").classes("w-40").mark(mark)
+    if kind == "list" or column in _LONG_TEXT:
+        return (
+            ui.textarea(value="\n".join(values))
+            .props("dense outlined autogrow")
+            .classes("w-full")
+            .mark(mark)
+        )
+    return ui.input(value=(values or [""])[0]).props("dense outlined").classes("w-full").mark(mark)
+
+
+def _field_value(column: str, element: ui.element) -> object:
+    """What an edited profile field holds, for ContractorProfile."""
+    kind = _field_kind(column)
+    value = getattr(element, "value", None)
+    if kind == "bool":
+        return bool(value)
+    if kind == "number":
+        return None if value in (None, "") else value
+    text = str(value or "")
+    if kind == "list":
+        return [line.strip() for line in text.splitlines() if line.strip()]
+    return text.strip() or None
 
 
 RESUME_ROUTE = "/resume/{talent_id}"
@@ -1061,37 +1181,167 @@ def _serve_resumes(service: AppService) -> None:
         )
 
 
-def resume_button(talent_id: str, name: str | None, has_resume: bool, marker: str) -> None:
-    """Opens the contractor's stored résumé (Talent and Results). Always shown; greyed out
-    when there is no résumé on file (user request). The tooltip sits on a wrapper: a
-    disabled button gets no hover events."""
+def pdf_chooser(
+    native: bool, on_pdf: Callable[[bytes], Awaitable[None] | None], marker: str
+) -> Callable[[], Awaitable[None]]:
+    """Opens a chooser for one PDF: the OS dialog in the app, the browser's file chooser
+    (a hidden upload box, made here) in the browser preview. on_pdf gets the file's bytes;
+    its name is never kept (it may hold the person's name)."""
+
+    async def deliver(data: bytes) -> None:
+        result = on_pdf(data)
+        if asyncio.iscoroutine(result):
+            await result
+
+    if native:
+
+        async def browse() -> None:
+            window = nicegui_app.native.main_window
+            if window is None:
+                ui.notify("The file dialog is not available.", type="negative")
+                return
+            picked = await window.create_file_dialog(file_types=("PDF résumé (*.pdf)",))
+            if picked:
+                await deliver(Path(picked[0]).read_bytes())
+
+        return browse
+
+    async def uploaded(e: UploadEventArguments) -> None:
+        data = await e.file.read()
+        upload.reset()  # the same file can be picked again
+        await deliver(data)
+
+    upload = (
+        ui.upload(on_upload=uploaded, auto_upload=True)
+        .props('accept=".pdf"')
+        .classes("hidden")
+        .mark(f"{marker}-upload")
+    )
+
+    async def pick() -> None:
+        upload.run_method("pickFiles")
+
+    return pick
+
+
+def resume_button(
+    talent_id: str,
+    name: str | None,
+    has_resume: bool,
+    marker: str,
+    *,
+    service: AppService | None = None,
+    native: bool = False,
+    on_change: Callable[[], None] | None = None,
+) -> None:
+    """The contractor's stored résumé (Talent and Results). Always shown, grey when there is
+    no résumé on file (user request). With `service` (Talent screen, user request
+    2026-11-18): the grey button picks a PDF and stores it, and the viewer can replace the
+    résumé. Without it (Results) a grey button is disabled. The tooltip sits on a wrapper:
+    a disabled button gets no hover events."""
+    editable = service is not None
+
+    async def add(data: bytes) -> None:
+        assert service is not None
+        try:
+            service.save_resume(talent_id, data)
+        except RUN_ERRORS as exc:
+            ui.notify(str(exc), type="warning")
+            return
+        ui.notify("Résumé added.", type="positive")
+        if on_change:
+            on_change()
+
+    def click() -> Awaitable[None] | None:
+        # Sync: the viewer dialog must be made in the click's own context.
+        if has_resume:
+            _resume_dialog(talent_id, name, service=service, native=native)
+            return None
+        return choose() if choose is not None else None
+
     with ui.element("span") as wrapper:
         button = (
-            ui.button(
-                "Résumé", icon="picture_as_pdf", on_click=lambda: _resume_dialog(talent_id, name)
-            )
+            ui.button("Résumé", icon="picture_as_pdf", on_click=click)
             .props("outline dense no-caps")
             .classes("bg-white pl-1 pr-3")
             .mark(marker)
         )
+        choose = pdf_chooser(native, add, marker) if editable and not has_resume else None
     if not has_resume:
-        button.disable()
         button.props("color=grey-7")
-        wrapper.tooltip("No résumé on file")
+        if editable:
+            wrapper.tooltip("No résumé on file: click to add one (PDF)")
+        else:
+            button.disable()
+            wrapper.tooltip("No résumé on file")
 
 
-def _resume_dialog(talent_id: str, name: str | None) -> None:
-    """The résumé in the browser's (or webview's) own PDF viewer."""
+def _resume_dialog(
+    talent_id: str, name: str | None, *, service: AppService | None = None, native: bool = False
+) -> None:
+    """The résumé in the browser's (or webview's) own PDF viewer. With `service` (Talent
+    screen): Replace résumé picks a new PDF, and only the Save that then appears replaces
+    the stored file (user request 2026-11-18); Cancel drops the pick."""
+    src = f"/resume/{quote(talent_id, safe='')}"
+    pending: dict[str, bytes] = {}
     with (
         ui.dialog() as dialog,
         ui.card().style("width: 90vw; max-width: 90vw; height: 90vh; max-height: 90vh"),
     ):
-        with ui.row().classes("w-full items-center justify-between"):
+        with ui.row().classes("w-full items-center justify-between no-wrap"):
             ui.label(f"Résumé: {name or talent_id}").classes("text-h6")
-            ui.button(icon="close", on_click=dialog.close).props("flat round dense")
-        ui.element("iframe").props(
-            f'src="/resume/{quote(talent_id, safe="")}" title="Résumé"'
-        ).classes("w-full grow border-0").mark("resume-frame")
+            with ui.row().classes("items-center gap-2 no-wrap"):
+                if service is not None:
+
+                    async def picked(data: bytes) -> None:
+                        pending["data"] = data
+                        confirm_row.set_visibility(True)
+
+                    choose = pdf_chooser(native, picked, "resume-replace")
+                    ui.button("Replace résumé", icon="upload_file", on_click=choose).props(
+                        "outline dense no-caps"
+                    ).classes("bg-white pl-1 pr-3").mark("resume-replace")
+                ui.button(icon="close", on_click=dialog.close).props("flat round dense")
+        with ui.row().classes(
+            "w-full items-center gap-2 px-3 py-2 rounded bg-yellow-1"
+        ) as confirm_row:
+            ui.label("New résumé picked. Save replaces the one on file (the old copy is kept).")
+            ui.button("Save", icon="save", on_click=lambda: save()).props(
+                "dense no-caps color=primary"
+            ).classes("pl-1 pr-3").mark("resume-save")
+            ui.button("Cancel", on_click=lambda: cancel()).props("flat dense no-caps").mark(
+                "resume-cancel"
+            )
+        confirm_row.set_visibility(False)
+        frame = (
+            ui.element("iframe")
+            .props(f'src="{src}" title="Résumé"')
+            .classes("w-full grow border-0")
+            .mark("resume-frame")
+        )
+
+    def cancel() -> None:
+        pending.clear()
+        confirm_row.set_visibility(False)
+
+    def save() -> None:
+        assert service is not None
+        data = pending.pop("data", None)
+        if data is None:
+            return
+        try:
+            outcome = service.save_resume(talent_id, data)
+        except RUN_ERRORS as exc:
+            ui.notify(str(exc), type="warning")
+            return
+        confirm_row.set_visibility(False)
+        if outcome == "unchanged":
+            ui.notify("That is the same file: nothing changed.")
+            return
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
+        frame.props(f'src="{src}?v={stamp}"')  # show the new file
+        ui.notify("Résumé replaced.", type="positive")
+
     dialog.open()
 
 
@@ -1925,20 +2175,25 @@ def _talent_jobs_table(item: TalentOverview) -> None:
 
 
 def _talent_card(
-    service: AppService, item: TalentOverview, refresh: Callable[[], None], opened: set[str]
+    service: AppService,
+    item: TalentOverview,
+    refresh: Callable[[], None],
+    opened: set[str],
+    native: bool = False,
 ) -> None:
     background, border = TALENT_STYLE[item.available]
     card = ui.card().props("flat").classes("w-full px-4 py-3 gap-1 rounded-2xl")
     card.style(f"background-color: {background}; border: 2px solid {border};")
     card.mark("talent-card", f"talent-{'available' if item.available else 'unavailable'}")
 
-    def save() -> None:
+    def flip(e: ValueChangeEventArguments) -> None:
+        """The switch saves as soon as it is flipped (user decision 2026-11-18)."""
         try:
-            service.set_talent_availability(item.talent_id, bool(switch.value), note.value or "")
+            service.set_talent_availability(item.talent_id, bool(e.value))
         except RUN_ERRORS as exc:
             ui.notify(str(exc), type="warning")
             return
-        ui.notify("Saved.", type="positive")
+        ui.notify("Saved: " + ("available." if e.value else "not available."), type="positive")
         refresh()
 
     def remember(e: ValueChangeEventArguments) -> None:
@@ -1970,7 +2225,7 @@ def _talent_card(
             with ui.column().classes(
                 "items-center justify-center gap-0 pr-2 border-r border-grey-4 w-20 shrink-0"
             ):
-                switch = ui.switch(value=item.available).mark(f"available:{item.talent_id}")
+                ui.switch(value=item.available, on_change=flip).mark(f"available:{item.talent_id}")
                 ui.label("Available").classes("text-xs text-grey-8 text-center leading-tight")
             with ui.column().classes("flex-1 min-w-0 gap-1"):
                 with ui.row().classes("items-center gap-2"):
@@ -1994,34 +2249,39 @@ def _talent_card(
                 if item.toggled is not None:
                     t = item.toggled
                     state = "available" if t.available else "not available"
-                    line = f"Set {state} by {t.reviewer} on {t.changed_at:%Y-%m-%d}"
-                    ui.label(line + (f": {t.note}" if t.note else "")).classes(
-                        "text-xs text-grey-7"
-                    ).mark("talent-note")
-            # Right section: Profile, Résumé and Save on the first row, the note under them
-            # (user request).
+                    line = f"Set {state} by {t.reviewer} on {t.changed_at:%Y-%m-%d}."
+                    ui.label(line).classes("text-xs text-grey-7").mark("talent-set")
+            # Right section: Profile and Résumé on the first row, the note under them,
+            # read-only: it is written in the Profile pop-up (user decisions 2026-11-18).
             with ui.column().classes("gap-2 self-start items-stretch shrink-0"):
                 with ui.row().classes("items-center justify-end gap-2 no-wrap"):
                     ui.button(
                         "Profile",
                         icon="badge",
-                        on_click=lambda: _profile_dialog(service, item.talent_id, item.name),
-                    ).props("outline dense no-caps").classes("bg-white pl-1 pr-3")
+                        on_click=lambda: _profile_dialog(
+                            service,
+                            item.talent_id,
+                            item.name,
+                            editable=True,
+                            note=item.note,
+                            on_saved=refresh,
+                        ),
+                    ).props("outline dense no-caps").classes("bg-white pl-1 pr-3").mark(
+                        f"profile:{item.talent_id}"
+                    )
                     resume_button(
-                        item.talent_id, item.name, item.has_resume, f"resume:{item.talent_id}"
+                        item.talent_id,
+                        item.name,
+                        item.has_resume,
+                        f"resume:{item.talent_id}",
+                        service=service,
+                        native=native,
+                        on_change=refresh,
                     )
-                    # Icon only, the same height as Profile and Résumé (user request).
-                    ui.button(icon="save", on_click=save).props(
-                        'outline dense aria-label="Save availability"'
-                    ).classes("bg-white px-2").mark(f"save-available:{item.talent_id}").tooltip(
-                        "Save availability"
-                    )
-                note = (
-                    ui.input(placeholder="Note (optional)")
-                    .props("dense outlined bg-color=white")
-                    .classes("w-full")
-                    .mark(f"note:{item.talent_id}")
-                )
+                ui.label(item.note or "No note").classes(
+                    "w-full max-w-xs text-sm px-2 py-1 rounded border border-grey-4 bg-white "
+                    "whitespace-pre-wrap " + ("" if item.note else "text-grey-6 italic")
+                ).mark(f"note:{item.talent_id}")
         live = [j for j in item.jobs if not j.removed]
         with ui.row().classes("w-full items-start no-wrap gap-2"):
             with (
@@ -2036,7 +2296,7 @@ def _talent_card(
                 .mark(f"talent-jobs:{item.talent_id}")
             ):
                 _talent_jobs_table(item)
-            # Away from Save (user request): the card's bottom-right corner, icon only.
+            # The card's bottom-right corner, icon only.
             if not item.available:
                 danger_button("", delete, f"delete-talent:{item.talent_id}").tooltip(
                     "Delete this contractor and all their data"
@@ -2070,7 +2330,7 @@ def talent_page(service: AppService, native: bool) -> None:
         elif not matching:
             ui.label("Nobody matches the search.").classes("text-grey-7")
         for item in matching:
-            _talent_card(service, item, body.refresh, opened)
+            _talent_card(service, item, body.refresh, opened, native)
 
     def search(e: ValueChangeEventArguments) -> None:
         query["text"] = e.value or ""
@@ -2086,9 +2346,11 @@ def talent_page(service: AppService, native: bool) -> None:
         ui.label(
             "Turn off Available for matching when a contractor isn't looking for a project "
             "(check with them first): they are no longer sent to Gemini, and their open "
-            "recommendations make room for others. A hire never changes it. Profile changes go "
-            "through the contractor intake form and the next contractor list import; a new or "
-            "changed profile in an import sets it from the contractor's own answer."
+            "recommendations make room for others. The switch saves as soon as you flip it; a "
+            "hire never changes it. Profile opens the contractor's details: Edit changes them "
+            "and Save stores them with your note. A later contractor list import with other "
+            "values replaces your edits, and a new or changed profile in an import sets the "
+            "switch from the contractor's own answer."
         ).classes("text-xs text-grey-7")
         ui.input(placeholder="Search by name or headline", on_change=search).props(
             "dense outlined clearable bg-color=white"
