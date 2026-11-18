@@ -4,6 +4,20 @@ What each change solves, for the team. Newest first. Add an entry with every com
 
 ---
 
+## 2026-11-18 · Plain-language progress box on Find matches
+
+### What this solves
+- The progress box showed technical log lines (model names, budgets, token counts), hard to read for a reviewer who isn't technical.
+
+### How to use
+- The box now shows short plain sentences, one per line, in a slightly larger font, e.g. "Contractors: 4 new, 0 updated, 0 unchanged." and "Checking 2 jobs with Gemini.".
+- When Gemini is too busy (no answer in time, too many requests per minute, or "overloaded") and jobs were left unchecked, it says **"Gemini timed out, high traffic, please try again."**
+- At the end it shows the result in bold: **"Successful: 3 matched, 1 no matches."** (plus "N not checked yet" when some jobs still wait). A run cut short says "Stopped early: …".
+- The technical lines, including the tokens of every Gemini call, still go to the app's log, and the command line (`jobmatch run-once`) prints them as before. Today's Gemini usage still shows under the box.
+- No new packages, columns or files.
+
+---
+
 ## 2026-11-18 · A hire no longer makes the contractor unavailable
 
 ### What this solves

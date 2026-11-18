@@ -551,12 +551,14 @@ class AppService:
         confirm: Callable[[RunCheck], bool],
         progress: Callable[[float, str], None] | None = None,
         match: bool = True,
+        say: Callable[[str], None] | None = None,
     ) -> RunOnceReport:
         """The "Find matches" button: load the picked contractor file (if any), import new
         jobs from the inbox, judge new jobs with Gemini, store shortlists. Blocking: the UI
         runs it in a worker thread. The picked contractor file is cleared once loaded.
         match=False is the "Ingest" button: store contractors, résumés and jobs only (no
-        Gemini call), so the reviewer can check them before matching."""
+        Gemini call), so the reviewer can check them before matching. `say` gets the plain
+        sentences for the progress box; `echo` the technical lines."""
         report = run_once(
             self.settings,
             provider_factory=self._provider,
@@ -566,6 +568,7 @@ class AppService:
             confirm=confirm,
             echo=echo,
             progress=progress,
+            say=say,
         )
         self.contractor_file = None
         self.resumes = {}

@@ -125,13 +125,16 @@ def run_once(
     echo: Callable[[str], None] = print,
     fetcher_factory: Callable[[], PageFetcher] | None = None,
     progress: Progress | None = None,
+    say: Callable[[str], None] | None = None,
 ) -> RunOnceReport:
     """link_paths / paste_paths default to data/inbox/links and data/inbox/manual.
     provider_factory is only called when a call is about to be sent, so a run that needs
     no call works without an API key. fetcher_factory is for tests (default: WebFetcher).
     progress(share, stage) reports how far the run is (0 to 1), for a progress bar.
     contractor_file may be a contractor folder (its file plus resume/); `resumes` adds
-    résumés picked one by one ({file stem: PDF})."""
+    résumés picked one by one ({file stem: PDF}). `echo` gets the technical lines (CLI, app
+    log); `say` gets short plain sentences, one per line, for the app's progress box (user
+    request 2026-11-18)."""
     llm = settings.llm
     if llm is None:
         raise PipelineError("settings.yaml has no llm section")
@@ -149,7 +152,7 @@ def run_once(
             on_progress = progress or (lambda share, stage: None)
             _run(settings, loader, report, provider_factory, contractor_file, resumes or {},
                  link_paths, paste_paths, confirm, max_calls, echo, fetcher_factory,
-                 on_progress)  # fmt: skip
+                 on_progress, say or (lambda line: None))  # fmt: skip
     except Timeout as exc:
         raise PipelineError("another run is in progress; try again when it ends") from exc
     report.seconds = round(perf_counter() - started, 3)
@@ -171,6 +174,7 @@ def _run(
     echo: Callable[[str], None],
     fetcher_factory: Callable[[], PageFetcher] | None,
     progress: Progress,
+    say: Callable[[str], None],
 ) -> None:
     llm = settings.llm
     assert llm is not None
@@ -184,6 +188,7 @@ def _run(
         contractor_file, resumes = folder.contractor_file, {**folder.resumes, **resumes}
     if contractor_file is not None:
         echo(f"Loading contractors from {contractor_file.name}")
+        say("Loading the contractor list.")
         stored = loader.contractors.list_all() if loader.contractors.exists() else []
         loaded = load_contractor_file(
             contractor_file,
@@ -196,12 +201,17 @@ def _run(
                 f"  {len(loaded.given_ids)} row(s) had no talent ID and got: "
                 f"{', '.join(loaded.given_ids)} (add them to your file to keep them stable)"
             )
+            say(
+                f"{_count(len(loaded.given_ids), 'contractor')} had no talent ID, so the app "
+                "gave them one."
+            )
         report.contractors = upsert_contractors(loaded.rows, loader.contractors)
         c = report.contractors
         echo(
             f"  {len(c.added)} added · {len(c.updated)} updated · {c.unchanged} unchanged · "
             f"{c.kept_not_in_file} kept (not in the file)"
         )
+        say(f"Contractors: {len(c.added)} new, {len(c.updated)} updated, {c.unchanged} unchanged.")
         marked = mark_changes(loader, stored, c, llm.payload, datetime.now(UTC))
         if marked:
             echo(f"  {marked} contractor(s) to match again (what Gemini sees has changed)")
@@ -215,6 +225,13 @@ def _run(
             f"  résumés: {r.added} added · {r.replaced} replaced · {r.unchanged} unchanged"
             + (f" · {r.unmatched} skipped (not a talent ID, or not a PDF)" if r.unmatched else "")
         )
+        if r.added + r.replaced:
+            say(f"{_count(r.added + r.replaced, 'résumé')} stored.")
+        if r.unmatched:
+            say(
+                f"{_count(r.unmatched, 'résumé file')} skipped: the name is not a talent ID, "
+                "or it is not a PDF."
+            )
     if not report.ingest_only and not loader.contractors.exists():
         raise PipelineError("no contractor list yet: load a contractor file first")
 
@@ -241,6 +258,7 @@ def _run(
                 close()
         report.ingest.append(ingest)
         echo(f"  {_ingest_line(ingest)}")
+        _say_ingest(ingest, "Posting links", say)
         if inbox_links:
             _clear_inbox(default_links[0], ingest, echo)
     if pastes and normalizer:
@@ -250,9 +268,12 @@ def _run(
         )
         report.ingest.append(ingest)
         echo(f"  {_ingest_line(ingest)}")
+        _say_ingest(ingest, "Pasted postings", say)
         if inbox_pastes:
             _clear_inbox(default_pastes[0], ingest, echo)
     entered = collect_job_csv_files(pastes)
+    if (links and normalizer) or (pastes and normalizer) or entered:
+        say("Importing jobs.")
     if entered:
         echo("Importing jobs entered by hand (jobs CSV and form)")
         ingest = ingest_job_csv_files(
@@ -264,6 +285,12 @@ def _run(
             if o.outcome in ("error", "invalid") and o.detail:
                 dropped = " (row dropped: fix it in your file and pick the file again)"
                 echo(f"  {o.detail}{dropped if o.outcome == 'invalid' else ''}")
+        _say_ingest(ingest, "Jobs entered by hand", say)
+        for o in ingest.outcomes:
+            if o.outcome in ("error", "invalid") and o.detail:
+                say(f"Not imported: {o.detail.rstrip('.')}.")
+                if o.outcome == "invalid":
+                    say("Fix that row in your file, then pick the file again.")
         if inbox_pastes:
             _clear_inbox(default_pastes[0], ingest, echo)
     filled = fill_contact_emails(loader)
@@ -272,6 +299,7 @@ def _run(
     if report.ingest_only:
         progress(1.0, "Stored")
         echo("Stored. Nothing was sent to Gemini: click Find matches when ready.")
+        say("Stored. Nothing was sent to Gemini: click Find matches when you are ready.")
         return
 
     # 3. budget
@@ -282,6 +310,7 @@ def _run(
     roster = build_roster(profiles, llm.payload, toggles(loader))  # Talent screen toggles
     for ex in roster.excluded:
         echo(f"  contractor left out of the call: {ex.talent_id} ({ex.reason})")
+    _say_excluded([ex.reason for ex in roster.excluded], say)
     if not roster.cards:
         raise PipelineError("no contractor can be sent (all left out); check the contractor list")
     report.active_jobs = len(jobs)
@@ -305,6 +334,7 @@ def _run(
         echo(f"{len(jobs)} active job(s) · {calls} to send to Gemini · {cached} cached")
         echo(f"Screening: {llm.model} · deep review: {' → '.join(llm.review_chain)}")
         echo(f"Budget: {check.verdict.upper()} · {check.message}")
+        say(f"Checking {_count(calls, 'job')} with Gemini.")
         go = True
         if check.verdict != "ok":
             go = report.confirmed = confirm(check)
@@ -314,6 +344,7 @@ def _run(
         if not go:
             report.stopped = "not sent: the run needs a yes to use that much of today's quota"
             echo(report.stopped)
+            say("Nothing was sent to Gemini: you chose not to use that much of today's quota.")
         else:
             # 4. Gemini: every job is screened first (one "[llm] screen" line each), then the
             # shortlists are reviewed in batches ("[llm] review" lines; at most one per batch,
@@ -354,8 +385,10 @@ def _run(
                 echo(f"Did not answer in time (skipped for this run): {', '.join(j.timed_out)}")
             if j.stopped:
                 report.stopped = j.stopped
+            _say_judged(j, say)
     else:
         echo(f"{len(jobs)} active job(s) · nobody new to scan (no API call)")
+        say("Nothing new to check, so nothing was sent to Gemini.")
 
     # 5. store every candidate (the pool) and who was scanned, then the rounds and statuses
     progress(PROGRESS_JUDGED, "Saving shortlists")
@@ -392,6 +425,66 @@ def echo_today(llm: LlmSettings, ledger: UsageLedger, echo: Callable[[str], None
         if day.requests:
             limits = llm.for_model(model).limits
             echo(f"  {model}: {day.requests}/{limits.rpd} requests · {day.tokens:,} tokens")
+
+
+def _count(n: int, word: str) -> str:
+    """The app's plain sentences: "1 job", "3 jobs"."""
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+_INGEST_PLAIN = (
+    ("new", "{} new"),
+    ("needs_details", "{} need more details"),
+    ("filtered", "{} left out by the filters"),
+    ("duplicate", "{} duplicates"),
+    ("already_stored", "{} already imported"),
+    ("invalid", "{} rows not imported"),
+    ("error", "{} could not be read"),
+)
+
+
+def _say_ingest(report: IngestReport, source: str, say: Callable[[str], None]) -> None:
+    """One plain sentence for one import, e.g. "Pasted postings: 2 new, 1 already imported."."""
+    parts = [text.format(report.count(o)) for o, text in _INGEST_PLAIN if report.count(o)]  # type: ignore[arg-type]
+    say(f"{source}: {', '.join(parts)}." if parts else f"{source}: nothing new.")
+
+
+_EXCLUDED_PLAIN = {  # reason: (one contractor, several)
+    "marked unavailable": (
+        "1 contractor is marked not available, so they are not checked.",
+        "{} contractors are marked not available, so they are not checked.",
+    ),
+    "not contract": (
+        "1 contractor is not looking for contract work, so they are not checked.",
+        "{} contractors are not looking for contract work, so they are not checked.",
+    ),
+    "contact data left after scrubbing": (
+        "1 contractor was left out because their profile still holds contact details.",
+        "{} contractors were left out because their profiles still hold contact details.",
+    ),
+}
+
+
+def _say_excluded(reasons: Sequence[str], say: Callable[[str], None]) -> None:
+    for reason, (one, several) in _EXCLUDED_PLAIN.items():
+        n = reasons.count(reason)
+        if n:
+            say(one if n == 1 else several.format(n))
+
+
+HIGH_TRAFFIC = "Gemini timed out, high traffic, please try again."
+
+
+def _say_judged(j: JudgeRunReport, say: Callable[[str], None]) -> None:
+    """What went wrong with Gemini, in plain words (nothing when every job got an answer)."""
+    if j.exhausted and j.stopped:
+        say("Today's Gemini limit is reached: please run again tomorrow.")
+    if j.failed and j.busy:
+        say(HIGH_TRAFFIC)
+    elif j.failed:
+        say(
+            f"{_count(j.failed, 'job')} got no usable answer from Gemini; the next run tries again."
+        )
 
 
 def _web_fetcher(settings: Settings) -> PageFetcher:

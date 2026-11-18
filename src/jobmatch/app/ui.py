@@ -671,7 +671,7 @@ def home_page(service: AppService, native: bool) -> None:
             bar.classes("w-full sm:w-3/4 lg:w-1/2")
             bar.set_visibility(False)
             status = ui.label("").classes("text-sm text-center").mark("run-status")
-        log = ui.log(max_lines=400).classes("w-full h-[33vh] min-h-[200px] font-mono text-xs")
+        log = ui.log(max_lines=400).classes("w-full h-[33vh] min-h-[200px] font-mono text-sm")
         quota_label = ui.label().classes("text-xs text-grey-7")
         after = ui.row()
 
@@ -738,8 +738,8 @@ def home_page(service: AppService, native: bool) -> None:
                 )
 
     def update() -> None:
-        for line in job.lines[seen["lines"] :]:
-            log.push(line)
+        for line, bold in job.lines[seen["lines"] :]:
+            log.push(line, classes="font-bold" if bold else None)
         seen["lines"] = len(job.lines)
         if job.running:
             run_button.disable()
@@ -776,6 +776,16 @@ def home_page(service: AppService, native: bool) -> None:
     ingest_button.on_click(lambda: start(match=False))
 
 
+def result_line(report: RunOnceReport) -> str:
+    """The progress box's last line after Find matches, shown in bold (user request
+    2026-11-18), e.g. "Successful: 3 matched, 1 no matches."."""
+    parts = [f"{report.jobs_matched} matched", f"{report.jobs_no_match} no matches"]
+    if report.jobs_not_judged:
+        parts.append(f"{report.jobs_not_judged} not checked yet")
+    head = "Stopped early" if report.stopped else "Successful"
+    return f"{head}: {', '.join(parts)}."
+
+
 def run_summary(report: RunOnceReport) -> str:
     if report.ingest_only:
         return _ingested_text(report)
@@ -795,7 +805,9 @@ class RunJob:
         self.service = service
         self.running = False
         self.match = True
-        self.lines: list[str] = []
+        # The progress box: plain sentences, one per line, and whether each is bold. The
+        # technical lines go to the app's log (user request 2026-11-18).
+        self.lines: list[tuple[str, bool]] = []
         self.share = 0.0
         self.stage = ""
         self.report: RunOnceReport | None = None
@@ -828,20 +840,28 @@ class RunJob:
         try:
             self.report = await run.io_bound(
                 self.service.run,
-                echo=self.lines.append,
+                echo=_log_run_line,
                 confirm=self._confirm,
                 progress=self._progress,
                 match=match,
+                say=self._say,
             )
+            if match:
+                self.lines.append((result_line(self.report), True))
         except RUN_ERRORS as exc:
             self.error = str(exc)
         except Exception:  # noqa: BLE001 (shown in plain words; details go to the log)
             logger.exception("run_failed")
             self.error = "The run stopped on an unexpected error. See the app's log."
         finally:
+            if self.error is not None:
+                self._say(f"Stopped: {self.error.rstrip('.')}.")
             self.question = None
             self.running = False
             self.finished += 1
+
+    def _say(self, line: str) -> None:  # worker thread
+        self.lines.append((line, False))
 
     def _progress(self, share: float, stage: str) -> None:  # worker thread
         self.share, self.stage = share, stage
@@ -856,6 +876,11 @@ class RunJob:
     def answer(self, yes: bool) -> None:
         self._answer = yes
         self._answered.set()
+
+
+def _log_run_line(line: str) -> None:
+    """A technical run line (models, budget, tokens per call): the app's log, not the box."""
+    logger.info("run_line %s", line.strip())
 
 
 _RUN_JOBS: dict[int, RunJob] = {}
