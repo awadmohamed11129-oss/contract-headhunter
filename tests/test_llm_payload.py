@@ -93,3 +93,11 @@ def test_posting_cannot_close_the_job_block(make_job: Callable[..., Job]) -> Non
     text = render_job(job_card(job, payload_settings()))
     assert "</job>" not in text
     assert "‹/job›" in text
+
+
+def test_phone_numbers_are_masked_like_emails(make_job: Callable[..., Job]) -> None:
+    job = make_job(
+        responsibilities=["Call the client at (416) 555-0100 ext 23 or 1-800-555-0199 weekly"]
+    )
+    text = render_job(job_card(job, payload_settings()))
+    assert "555" not in text and text.count("[phone]") == 2

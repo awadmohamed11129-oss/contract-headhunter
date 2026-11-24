@@ -143,17 +143,17 @@ def check_run(
         f" and {tokens_left:,} token(s)" if tokens_left is not None else ""
     )
     message = (
-        f"{planned_calls} call(s) of about {tokens_per_call:,} tokens planned; "
-        f"{left} left today (limits {limits.rpd} RPD"
-        + (f", {limits.tpd:,} TPD" if limits.tpd else "")
+        f"This run needs {planned_calls} Gemini call(s), about {tokens_per_call:,} tokens each. "
+        f"Left today: {left} (daily limits: {limits.rpd} requests"
+        + (f", {limits.tpd:,} tokens" if limits.tpd else "")
         + ")."
     )
     if verdict == "exceeds":
-        message += f" The run cannot finish today: at most {can_run} call(s) fit."
+        message += f" It cannot all be done today: at most {can_run} call(s) fit."
     elif verdict == "warn":
         share = round(budget.drain_warn_share * 100)
         message += (
-            f" It would use more than {share}% of what is left today; "
+            f" This would use more than {share}% of what is left today; "
             f"{calls_that_fit} call(s) stay under that."
         )
     return RunCheck(

@@ -22,6 +22,10 @@ require_profile_text: true
 new_id_prefix: TAL-CAN-
 new_id_width: 3
 
+# Every talent ID starts with this (TAL-ON-052, TAL-INT-ON-001, TAL-CAN-053). A dropped PDF whose
+# name starts with it is a résumé; any other PDF is asked about (job post or résumé).
+talent_id_prefix: TAL-
+
 # Profile locations that mean "unknown": the City, Province from tab 1 is used instead.
 location_placeholders: [location to confirm, to confirm, tbd, n/a, unknown]
 

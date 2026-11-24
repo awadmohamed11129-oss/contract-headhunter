@@ -78,6 +78,9 @@ class ContractorImportRules(StrictModel):
     # A loaded .csv row with no talent_id gets <new_id_prefix><highest ID number + 1>, padded
     # to new_id_width digits (user decision 2026-11-08). See contractor_upsert.fill_missing_ids.
     new_id_prefix: str = Field(default="TAL-CAN-", min_length=1)
+    # Every talent ID starts with this; a dropped résumé PDF is taken for one only when its
+    # name does (the app asks about any other PDF).
+    talent_id_prefix: str = Field(default="TAL-", min_length=1)
     new_id_width: int = Field(default=3, ge=1)
     columns: ImportColumns
 

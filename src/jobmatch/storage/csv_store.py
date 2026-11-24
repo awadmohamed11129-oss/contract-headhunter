@@ -538,9 +538,18 @@ class CsvStore:
         ]
 
 
-def export_csv[M: BaseModel](model: type[M], rows: Iterable[M], dest: Path) -> int:
-    """Write a human-facing copy (UTF-8 with BOM for Excel, formulas neutralized)."""
-    columns = list(model.model_fields)
+def export_csv[M: BaseModel](
+    model: type[M], rows: Iterable[M], dest: Path, *, optional_columns: tuple[str, ...] = ()
+) -> int:
+    """Write a human-facing copy (UTF-8 with BOM for Excel, formulas neutralized).
+
+    An optional column is left out of the file when no row has a value for it."""
+    rows = list(rows)
+    columns = [
+        c
+        for c in model.model_fields
+        if c not in optional_columns or any(getattr(r, c) not in (None, "", []) for r in rows)
+    ]
     count = 0
     with atomic_open(dest, encoding="utf-8-sig") as f:
         writer = csv.writer(f, lineterminator="\n")

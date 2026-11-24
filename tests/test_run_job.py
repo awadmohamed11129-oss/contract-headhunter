@@ -44,11 +44,11 @@ def test_run_survives_a_tab_change(app_settings: Settings, store, make_job, tmp_
         user.find(marker="find-matches").click()
         await user.should_see(marker="run-indicator", retries=20)
         await user.open("/jobs")  # another tab while Gemini is working
-        await user.should_see("Matching…", retries=20)
+        await user.should_see(marker="run-indicator", retries=20)  # the "Matching 1 of 1" pill
         assert run_job(service).running
         fake.go.set()
         await user.open("/")
-        await user.should_see("Done:", retries=80)
+        await user.should_see("checked:", retries=80)  # "1 new job checked: 1 with matches"
 
     run_ui(service, scenario)
     job = run_job(service)

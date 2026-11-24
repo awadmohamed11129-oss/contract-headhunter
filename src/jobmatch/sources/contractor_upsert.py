@@ -6,6 +6,7 @@ Accepted files:
 - .xlsx: the contractors master workbook, read with build-contractors' rules
   (config/contractor_import.yaml).
 - .csv: the contractor list's own columns (ContractorProfile), header and every row checked.
+  Optional extra columns: availability (text) and profile_updated (YYYY-MM-DD).
   A row with an empty talent_id gets a new ID (fill_missing_ids): the prefix from
   config/contractor_import.yaml (TAL-CAN-) plus the highest ID number known + 1. A row whose
   name matches a contractor already given such an ID reuses it, so loading the same file

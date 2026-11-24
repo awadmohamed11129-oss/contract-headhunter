@@ -36,9 +36,9 @@ def test_home_asks_for_a_key_first(service: AppService) -> None:
     async def scenario(user) -> None:  # noqa: ANN001
         await user.open("/")
         await user.should_see(marker="app-title")  # the header's wordmark ("do g∞d")
-        await user.should_see("Add your Gemini key in Settings")
-        await user.should_see("Find matches")
-        await user.should_see("0 contractor(s) processed")
+        await user.should_see("Add your key")  # step 1 of the first-run checklist
+        await user.should_see("Load contractors")
+        await user.should_see("No contractors yet.")
 
     run_ui(service, scenario)
 
@@ -66,16 +66,18 @@ def test_results_show_fits_and_store_a_decision(
 
     async def scenario(user) -> None:  # noqa: ANN001
         await user.open("/results")
-        await user.should_see("2 job(s) with clear fits")
+        await user.should_see("2 jobs with clear fits")
         await user.should_see("Alex Martin")
-        await user.should_see("No match: nobody in the contractor list fits")  # result chip
+        await user.should_see("No match: nobody on your contractor list fits")  # result chip
         await user.should_not_see("Approved")  # no decision yet, so no tag and no Reset
         # The first box on screen: the one whose "Approve" is clicked below (the test user
         # clicks the lowest element id; find() returns a set, so pick by id the same way).
         box = min(user.find(marker="contractor-box").elements, key=lambda e: e.id)
         assert box.style["border-left"].startswith("1px")  # undecided: no colour
         user.find(kind=ui.button, content="Approve").click()
+        await user.should_see(marker="reset-decision")
         await user.should_see("Approved")
+        await user.should_see(marker="undo-toast")  # "Approved: Alex Martin." with Undo
         assert box.style["border-left"] == f"4px solid {SHADE_EDGE['green']}"  # approved
         user.find(marker="reset-decision").click()
         await user.should_not_see("Approved")
@@ -99,7 +101,7 @@ def test_profile_pop_up_shows_the_csv_row(
         await user.open("/results")
         user.find(kind=ui.button, content="Profile").click()
         await user.should_see("Profile: Alex Martin")
-        await user.should_see("executive_summary")
+        await user.should_see("Summary")
         await user.should_see("Builds dashboards in Power BI for public agencies.")
 
     run_ui(service, scenario)
@@ -124,3 +126,36 @@ def test_title_case_for_job_titles() -> None:
     assert title_case("analyste de données - mandat") == "Analyste de Données - Mandat"
     assert title_case("l'équipe iOS") == "L'équipe iOS"
     assert title_case("the iOS developer") == "The iOS Developer"
+
+
+def test_undo_toast_really_undoes_a_decision(
+    service: AppService, store: CsvStore, make_job: Callable[..., Job], tmp_path: Path
+) -> None:
+    add_jobs(store, make_job)
+    path = contractor_file(tmp_path)
+    service.pick_contractor_file(path.name, path=path)
+    service.run(echo=lambda s: None, confirm=lambda c: False)
+
+    async def scenario(user) -> None:  # noqa: ANN001
+        await user.open("/results")
+        user.find(kind=ui.button, content="Approve").click()
+        await user.should_see(marker="reset-decision")
+        user.find(marker="undo-toast-action").click()
+        await user.should_not_see(marker="reset-decision")  # the decision is gone again
+
+    run_ui(service, scenario)
+    reviews = CsvReviewRepository(store).list_all()
+    assert [r.decision for r in reviews] == [Decision.APPROVED, Decision.CLEARED]
+
+
+def test_plural_and_failure_wording() -> None:
+    from jobmatch.app.ui_help import classify_failure, plural
+
+    assert plural(1, "job") == "1 job" and plural(2, "job") == "2 jobs"
+    assert plural(3, "match", "matches") == "3 matches"
+    title, hint = classify_failure("another run is in progress; try again when it ends")
+    assert "still running" in title and hint
+    title, hint = classify_failure("row 3: the pay is not a number")
+    assert title == "This did not work." and hint == "row 3: the pay is not a number"
+    _, hint = classify_failure("x" * 400)
+    assert hint == "Nothing was lost. You can try again."

@@ -3,6 +3,7 @@ with a contractor file and a resume/ folder of <talent_id>.pdf; the app copies t
 data/contractors/resumes/ and shows them from the Talent card. No network, no Gemini call for
 a résumé."""
 
+import zipfile
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,9 +20,11 @@ from jobmatch.sources.resumes import (
     resumes_dir,
     store_resumes,
     stored_resume,
+    unpack_zips,
 )
 from jobmatch.storage.csv_store import CsvContractorProfileRepository, CsvJobRepository, CsvStore
 from test_app_ui import run_ui
+from test_ingest import EN_CONTRACT
 from test_talent import MarkerGemini
 
 NOW = datetime(2026, 11, 9, 15, 0, tzinfo=UTC)
@@ -275,3 +278,171 @@ def test_results_resume_button(
         await user.should_see(marker="resume-frame")
 
     run_ui(service, scenario)
+
+
+# ---- zip (Google Drive's "Download") ----
+
+
+def zipped(zip_path: Path, files: dict[str, bytes | Path], top: str = "") -> Path:
+    """A zip holding `files` ({name inside: bytes or a file}), all under the folder `top`."""
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        for name, content in files.items():
+            data = content if isinstance(content, bytes) else content.read_bytes()
+            archive.writestr(f"{top}/{name}" if top else name, data)
+    return zip_path
+
+
+def folder_files(root: Path) -> dict[str, Path]:
+    return {p.relative_to(root).as_posix(): p for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def test_unpack_a_zip_with_a_top_folder(tmp_path: Path) -> None:
+    root = folder(tmp_path)
+    archive = zipped(tmp_path / "Contractors.zip", folder_files(root), top="Contractors")
+    out = tmp_path / "out"
+    out.mkdir()
+    unpacked = unpack_zips([archive], out)
+    assert unpacked == out / "Contractors"
+    picked = read_contractor_folder(unpacked)
+    assert picked.contractor_file.name == "contractors.csv"
+    assert sorted(picked.resumes) == ["Jane Doe CV", "TAL-CAN-0001", "tal-can-0002"]
+
+
+def test_unpack_a_zip_without_a_top_folder(tmp_path: Path) -> None:
+    root = folder(tmp_path)
+    archive = zipped(tmp_path / "flat.zip", folder_files(root))
+    archive_files = {"__MACOSX/._contractors.csv": b"x"}
+    with zipfile.ZipFile(archive, "a") as extra:  # macOS junk is skipped
+        for name, data in archive_files.items():
+            extra.writestr(name, data)
+    out = tmp_path / "out"
+    out.mkdir()
+    assert unpack_zips([archive], out) == out
+
+
+def test_several_zips_are_merged(tmp_path: Path) -> None:
+    root = folder(tmp_path)
+    files = folder_files(root)
+    first = zipped(
+        tmp_path / "c-001.zip", {"contractors.csv": files["contractors.csv"]}, "Contractors"
+    )
+    second = zipped(
+        tmp_path / "c-002.zip",
+        {k: v for k, v in files.items() if k.startswith("resume/")},
+        "Contractors",
+    )
+    out = tmp_path / "out"
+    out.mkdir()
+    unpacked = unpack_zips([first, second], out)
+    assert sorted(read_contractor_folder(unpacked).resumes) == [
+        "Jane Doe CV", "TAL-CAN-0001", "tal-can-0002",
+    ]  # fmt: skip
+
+
+def test_zip_mistakes(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    out.mkdir()
+    evil = zipped(tmp_path / "evil.zip", {"../escaped.txt": b"x"}, "Contractors")
+    with pytest.raises(ContractorFolderError, match="unsafe"):
+        unpack_zips([evil], out)
+    absolute = zipped(tmp_path / "abs.zip", {"/etc/passwd": b"x"})
+    with pytest.raises(ContractorFolderError, match="unsafe"):
+        unpack_zips([absolute], out)
+    assert not (tmp_path / "escaped.txt").exists()
+    empty = zipped(tmp_path / "empty.zip", {"notes.txt": b"x"}, "Contractors")
+    with pytest.raises(ContractorFolderError, match="no contractor file"):
+        unpack_zips([empty], out)
+    broken = tmp_path / "broken.zip"
+    broken.write_bytes(b"not a zip")
+    with pytest.raises(ContractorFolderError, match="not a valid zip"):
+        unpack_zips([broken], out)
+
+
+def test_pick_a_zip_like_the_folder(
+    app_with_job: tuple[AppService, MarkerGemini], tmp_path: Path
+) -> None:
+    service, _ = app_with_job
+    archive = zipped(tmp_path / "Contractors.zip", folder_files(folder(tmp_path)), "Contractors")
+    info = service.pick_contractor_folder(archive)  # a zip where a folder is expected
+    assert (info.contractors, info.resumes, info.unmatched) == (2, 2, ["Jane Doe CV"])
+    assert service.contractors_folder() == archive
+    unpacked = service.contractor_file.parent
+    assert unpacked.is_dir()
+    report = service.run(echo=lambda s: None, confirm=lambda c: True)
+    assert report.resumes is not None and report.resumes.added == 2
+    assert not unpacked.exists()  # the temp copy is deleted after the run
+    assert service.resume_path("TAL-CAN-0001") is not None
+
+
+def test_pick_several_zips_and_a_browser_zip(
+    app_with_job: tuple[AppService, MarkerGemini], tmp_path: Path
+) -> None:
+    service, _ = app_with_job
+    files = folder_files(folder(tmp_path))
+    csv_zip = zipped(tmp_path / "a.zip", {"contractors.csv": files["contractors.csv"]}, "C")
+    pdf_zip = zipped(tmp_path / "b.zip", {k: v for k, v in files.items() if "/" in k}, "C")
+    info = service.pick_contractor_zips([csv_zip, pdf_zip])
+    assert (info.contractors, info.resumes, info.missing_resumes) == (2, 2, [])
+    assert service.contractors_folder() is None  # several zips are not remembered
+    service.clear_contractor_picks()
+
+    full = zipped(tmp_path / "full.zip", files, "Contractors")
+    upload = service.pick_contractor_file("Contractors.zip", data=full.read_bytes())
+    assert upload.contractors == 2 and upload.path is not None
+    with pytest.raises(AppError, match="no contractor file"):
+        service.pick_contractor_file("only-pdfs.zip", data=pdf_zip.read_bytes())
+    assert service.contractor_file == upload.path  # the earlier pick is kept
+
+
+# ---- sync on start ----
+
+
+def test_sync_on_start_stores_what_is_new_without_gemini(
+    app_settings: Settings, tmp_path: Path
+) -> None:
+    fake = MarkerGemini()
+    service = AppService(
+        app_settings, tmp_path / "app.env", provider_factory=lambda: fake, environ={}
+    )
+    nothing = service.sync_on_start()
+    assert not nothing.ran and nothing.problems == [] and nothing.jobs_waiting == 0
+
+    root = folder(tmp_path)
+    (root / "resume" / "tal-can-0002.PDF").unlink()
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    (jobs / "analyst.txt").write_text(EN_CONTRACT, encoding="utf-8")
+    service.pick_contractor_folder(root)
+    service.set_jobs_folder(jobs)
+    service.clear_contractor_picks()
+
+    first = service.sync_on_start()
+    assert first.ran and first.people_added == 2 and first.people_updated == 0
+    assert first.new_job_files == 1 and first.new_jobs == 1 and first.jobs_waiting == 1
+    assert first.missing_resumes == ["Émilie Tremblay"] and first.problems == []
+    assert service.contractor_file is None  # nothing left picked
+    assert service.resume_path("TAL-CAN-0001") is not None
+    [waiting] = service.jobs_waiting()
+    assert waiting.title_raw == "Senior Business Analyst (12-month contract)"
+
+    second = service.sync_on_start()  # nothing changed: nothing is run
+    assert not second.ran and second.new_jobs == 0 and second.jobs_waiting == 1
+    pdf(root / "resume" / "TAL-CAN-0002.pdf", "Émilie")
+    third = service.sync_on_start()  # a new résumé is picked up
+    assert third.ran and third.people_added == 0 and third.missing_resumes == []
+    assert service.resume_path("TAL-CAN-0002") is not None
+    assert fake.calls == 0  # never a Gemini call
+
+
+@pytest.mark.parametrize(
+    "member", ["Contractors/D:evil.pdf", "Contractors/resume.pdf.", "Contractors/ok /a.pdf"]
+)
+def test_zip_names_with_a_colon_or_a_trailing_dot_or_space_are_refused(
+    tmp_path: Path, member: str
+) -> None:
+    out = tmp_path / "out"
+    out.mkdir()
+    bad = zipped(tmp_path / "bad.zip", {member: b"x"})
+    with pytest.raises(ContractorFolderError, match="unsafe"):
+        unpack_zips([bad], out)
+    assert not any(out.rglob("*"))

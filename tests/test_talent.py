@@ -200,7 +200,7 @@ def test_talent_screen(talent: tuple[AppService, MarkerGemini]) -> None:
 
     async def scenario(user) -> None:  # noqa: ANN001
         await user.open("/talent")
-        await user.should_see("5 contractor(s) · 4 available for matching · 1 not available")
+        await user.should_see("5 contractors · 4 available now · 1 left out of matching")
         await user.should_see("Profile says: not open to contract work")
         user.find(marker="talent-search").type("person 3")
         await user.should_not_see("Person 1")
@@ -208,11 +208,11 @@ def test_talent_screen(talent: tuple[AppService, MarkerGemini]) -> None:
         user.find(marker="talent-search").clear()
         await user.should_see("Person 1")
         user.find(marker="available:TAL-2").click()  # the switch: on -> off, saved at once
-        await user.should_see("Saved: not available.")
+        await user.should_see("Saved: left out of matching.")
         await user.should_see(marker="talent-set")
         # Opened again: the not available ones at the bottom, A–Z (Person 2, then 5).
         await user.open("/talent")
-        await user.should_see("3 available for matching · 2 not available")
+        await user.should_see("3 available now · 2 left out of matching")
         names = sorted(
             (e for e in user.find(kind=ui.label).elements if e.text.startswith("Person ")),
             key=lambda e: e.id,

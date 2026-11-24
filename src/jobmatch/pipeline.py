@@ -49,7 +49,7 @@ from jobmatch.llm.payload import is_active
 from jobmatch.llm.prompt import PROMPT_VERSION
 from jobmatch.llm.provider import LLMProvider
 from jobmatch.llm.usage import RunCheck, UsageLedger, check_run
-from jobmatch.normalize.contact import contact_email
+from jobmatch.normalize.contact import find_contact
 from jobmatch.normalize.pipeline import Normalizer
 from jobmatch.schemas import JobStatus, Run, RunStatus
 from jobmatch.shortlists import (
@@ -154,7 +154,9 @@ def run_once(
                  link_paths, paste_paths, confirm, max_calls, echo, fetcher_factory,
                  on_progress, say or (lambda line: None))  # fmt: skip
     except Timeout as exc:
-        raise PipelineError("another run is in progress; try again when it ends") from exc
+        raise PipelineError(
+            "another run is in progress: wait until it ends, then try again"
+        ) from exc
     report.seconds = round(perf_counter() - started, 3)
     loader.runs.append(_run_row(report, now, llm.model))
     return report
@@ -198,7 +200,7 @@ def _run(
         )
         if loaded.given_ids:  # IDs only, never names
             echo(
-                f"  {len(loaded.given_ids)} row(s) had no talent ID and got: "
+                f"  {len(loaded.given_ids)} row(s) had no talent ID and were given: "
                 f"{', '.join(loaded.given_ids)} (add them to your file to keep them stable)"
             )
             say(
@@ -214,7 +216,7 @@ def _run(
         say(f"Contractors: {len(c.added)} new, {len(c.updated)} updated, {c.unchanged} unchanged.")
         marked = mark_changes(loader, stored, c, llm.payload, datetime.now(UTC))
         if marked:
-            echo(f"  {marked} contractor(s) to match again (what Gemini sees has changed)")
+            echo(f"  {marked} contractor(s) will be matched again (their profile changed)")
         reset = reset_toggles_on_import(loader, c.added + c.updated, datetime.now(UTC))
         if reset:
             echo(f"  availability set from the new profile for {reset} contractor(s)")
@@ -233,7 +235,7 @@ def _run(
                 "or it is not a PDF."
             )
     if not report.ingest_only and not loader.contractors.exists():
-        raise PipelineError("no contractor list yet: load a contractor file first")
+        raise PipelineError("no contractor list yet: choose your contractors first, then try again")
 
     # 2. jobs
     progress(PROGRESS_CONTRACTORS, "Importing jobs")
@@ -283,7 +285,7 @@ def _run(
         echo(f"  {_ingest_line(ingest)}")
         for o in ingest.outcomes:
             if o.outcome in ("error", "invalid") and o.detail:
-                dropped = " (row dropped: fix it in your file and pick the file again)"
+                dropped = " (row skipped: fix it in your file and pick the file again)"
                 echo(f"  {o.detail}{dropped if o.outcome == 'invalid' else ''}")
         _say_ingest(ingest, "Jobs entered by hand", say)
         for o in ingest.outcomes:
@@ -295,10 +297,10 @@ def _run(
             _clear_inbox(default_pastes[0], ingest, echo)
     filled = fill_contact_emails(loader)
     if filled:
-        echo(f"  contact email found for {filled} job(s) imported earlier")
+        echo(f"  contact details found for {filled} job(s) imported earlier")
     if report.ingest_only:
         progress(1.0, "Stored")
-        echo("Stored. Nothing was sent to Gemini: click Find matches when ready.")
+        echo("Saved. Nothing was matched yet: click Find matches when you are ready.")
         say("Stored. Nothing was sent to Gemini: click Find matches when you are ready.")
         return
 
@@ -309,10 +311,13 @@ def _run(
     profiles = loader.contractors.list_all()
     roster = build_roster(profiles, llm.payload, toggles(loader))  # Talent screen toggles
     for ex in roster.excluded:
-        echo(f"  contractor left out of the call: {ex.talent_id} ({ex.reason})")
+        echo(f"  not matched: {ex.talent_id} ({ex.reason})")
     _say_excluded([ex.reason for ex in roster.excluded], say)
     if not roster.cards:
-        raise PipelineError("no contractor can be sent (all left out); check the contractor list")
+        raise PipelineError(
+            "nobody can be matched: every contractor is switched off or left out "
+            "(see the Talent page)"
+        )
     report.active_jobs = len(jobs)
     folder = judgments_dir(data_dir)
     # 0.4: each job is sent only the contractors not judged for it yet (shortlists.py).
@@ -331,7 +336,7 @@ def _run(
         check = check_run(llm.limits, llm.budget, ledger.today(model=llm.model), calls, per_call)
         report.budget = check
         cached = len(plan) - len(todo)
-        echo(f"{len(jobs)} active job(s) · {calls} to send to Gemini · {cached} cached")
+        echo(f"{len(jobs)} open job(s) · {calls} to check with Gemini · {cached} already checked")
         echo(f"Screening: {llm.model} · deep review: {' → '.join(llm.review_chain)}")
         echo(f"Budget: {check.verdict.upper()} · {check.message}")
         say(f"Checking {_count(calls, 'job')} with Gemini.")
@@ -342,7 +347,10 @@ def _run(
                 calls = check.calls_that_fit
                 go = calls > 0
         if not go:
-            report.stopped = "not sent: the run needs a yes to use that much of today's quota"
+            report.stopped = (
+                "not sent: you did not approve using that much of today's Gemini quota, "
+                "so nothing was used"
+            )
             echo(report.stopped)
             say("Nothing was sent to Gemini: you chose not to use that much of today's quota.")
         else:
@@ -375,19 +383,23 @@ def _run(
             )  # fmt: skip
             j = report.judge
             echo(
-                f"{j.sent} call(s) sent · {j.ok} usable · {j.failed} failed · tokens in "
+                f"{j.sent} request(s) sent to Gemini · {j.ok} answered · {j.failed} failed · "
+                "tokens used: in "
                 f"{j.input_tokens:,} · out {j.output_tokens:,} · total {j.total_tokens:,}"
             )
             echo_today(llm, ledger, echo)
             if j.exhausted:
-                echo(f"Reached the daily limit today: {', '.join(j.exhausted)}")
+                echo(f"Gemini's daily limit is used up for: {', '.join(j.exhausted)}")
             if j.timed_out:
-                echo(f"Did not answer in time (skipped for this run): {', '.join(j.timed_out)}")
+                echo(
+                    "Gemini did not answer in time (skipped for now, try again later): "
+                    f"{', '.join(j.timed_out)}"
+                )
             if j.stopped:
                 report.stopped = j.stopped
             _say_judged(j, say)
     else:
-        echo(f"{len(jobs)} active job(s) · nobody new to scan (no API call)")
+        echo(f"{len(jobs)} open job(s) · nothing new to check, so Gemini was not used")
         say("Nothing new to check, so nothing was sent to Gemini.")
 
     # 5. store every candidate (the pool) and who was scanned, then the rounds and statuses
@@ -410,8 +422,8 @@ def _run(
             statuses[job.job_id] = (status, None)
     jobs_repo.update_statuses(statuses)
     echo(
-        f"Shortlists: {report.jobs_matched} job(s) with matches · {report.jobs_no_match} with "
-        f"none · {report.jobs_not_judged} not judged yet · {report.matches_added} new row(s)"
+        f"Results: {report.jobs_matched} job(s) with matches · {report.jobs_no_match} with "
+        f"none · {report.jobs_not_judged} not checked yet · {report.matches_added} new match(es)"
     )
     progress(1.0, "Done")
 
@@ -504,8 +516,8 @@ def _ingest_line(report: IngestReport) -> str:
             ("duplicate", "duplicate"),
             ("already_stored", "already stored"),
             ("skipped", "skipped"),
-            ("invalid", "row(s) dropped"),
-            ("error", "error(s)"),
+            ("invalid", "row(s) skipped"),
+            ("error", "problem(s)"),
         )  # fmt: skip
         if report.count(o)  # type: ignore[arg-type]
     ]
@@ -516,15 +528,28 @@ INBOX_DONE = "done"
 
 
 def fill_contact_emails(loader: DataLoader) -> int:
-    """Jobs imported before contact emails were read (TODO 1, user decisions 2026-11-10):
-    take the address from their stored posting text. Local only; jobs.csv is rewritten (after
-    a backup) only when an address is found, so this settles after its first run."""
+    """Jobs imported before contact details were read (TODO 1, user decisions 2026-11-10; name,
+    phone and apply link added later): take them from the stored posting text. Only empty
+    fields are filled; nothing a person entered is changed. Local only; jobs.csv is rewritten
+    (after a backup) only when something is found, so this settles after its first run."""
     found = []
     for job in loader.jobs.list_all():
-        if job.contact_email is None and job.description_raw and "@" in job.description_raw:
-            address = contact_email(job.description_raw)
-            if address:
-                found.append(job.model_copy(update={"contact_email": address}))
+        if not job.description_raw:
+            continue
+        info = find_contact(job.description_raw, posting_url=job.url)
+        email = job.contact_email or info.email
+        update = {
+            "contact_email": email,
+            "contact_person": job.contact_person or info.person,
+            "contact_phone": job.contact_phone or info.phone,
+            "apply_url": job.apply_url or info.apply_url,
+        }
+        update = {k: v for k, v in update.items() if v and v != getattr(job, k)}
+        others = [a for a in (info.email, *info.other_emails) if a and a != email]
+        if others and not job.contact_other_emails:
+            update["contact_other_emails"] = others
+        if update:
+            found.append(job.model_copy(update=update))
     if found:
         loader.jobs.replace(found)
     return len(found)
@@ -558,7 +583,7 @@ def _clear_inbox(folder: Path, ingest: IngestReport, echo: Callable[[str], None]
     if moved:
         echo(f"  {moved} file(s) done, moved out of the inbox")
     if kept:
-        echo(f"  {kept} file(s) with errors stay in the inbox for the next run")
+        echo(f"  {kept} file(s) had a problem and stay in the inbox: fix them and run again")
 
 
 def _run_row(report: RunOnceReport, started_at: datetime, model: str) -> Run:

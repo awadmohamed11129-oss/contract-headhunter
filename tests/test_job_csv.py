@@ -271,13 +271,13 @@ def test_form_on_screen(service: AppService) -> None:
         user.find(marker="job-field:hours_per_week").type("20")
         user.find(marker="job-field:pay").type("85–95")
         user.find(marker="job-save").click()
-        await user.should_see("Entered by hand (1)")
+        await user.should_see("Typed in by you (1)")
         await user.should_see("Rédacteur (contrat)")
         [entry] = service.pending_entries()
         user.find(marker=f"remove-entry:{entry.name}").click()
         await user.should_see("Remove Rédacteur (contrat)?")
         user.find(marker="delete-confirm").click()
-        await user.should_not_see("Entered by hand")
+        await user.should_not_see("Typed in by you")
 
     run_ui(service, scenario)
     assert service.pending_entries() == []

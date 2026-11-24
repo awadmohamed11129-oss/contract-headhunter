@@ -1,7 +1,7 @@
 """The desktop app's logic (app/service.py), without any UI. Fake Gemini, no network."""
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -14,8 +14,9 @@ from jobmatch.app.service import (
 )
 from jobmatch.config import Settings
 from jobmatch.llm.usage import RunCheck
-from jobmatch.schemas import Decision, Job, ReasonCode
+from jobmatch.schemas import ContractorProfile, Decision, Job, ReasonCode
 from jobmatch.secrets_file import read_env_file
+from jobmatch.sources.contractor_upsert import upsert_contractors
 from jobmatch.storage.csv_store import CsvContractorProfileRepository, CsvReviewRepository, CsvStore
 from test_pipeline import add_jobs, contractor_file
 
@@ -240,3 +241,175 @@ def test_progress_moves_forward_to_done(
     assert "Importing jobs" in stages and "Screening jobs: 3 of 3" in stages
     assert "Deep reviews: 1 of up to 2" in stages  # 2 jobs with a shortlist: one batch
     assert stages[-1] == "Done"
+
+
+# ---- import messages ----
+
+
+def csv_with(tmp_path: Path, raw: bytes) -> Path:
+    path = tmp_path / "people" / "contractors.csv"
+    path.parent.mkdir(exist_ok=True)
+    path.write_bytes(raw)
+    return path
+
+
+def test_a_csv_that_is_not_utf8_gets_a_plain_message(service: AppService, tmp_path: Path) -> None:
+    good = contractor_file(tmp_path).read_text(encoding="utf-8").replace("Alex Martin", "Émile Roy")
+    for raw in (
+        good.encode("cp1252"),  # saved as "CSV" from Excel
+        good.encode("utf-8").decode("cp1252", errors="replace").encode("utf-8"),  # mojibake
+        good.replace("É", "�").encode("utf-8"),
+    ):
+        with pytest.raises(AppError, match="Save the file as CSV UTF-8 and try again"):
+            service.pick_contractor_file("contractors.csv", path=csv_with(tmp_path, raw))
+    service.pick_contractor_file("contractors.csv", path=csv_with(tmp_path, good.encode("utf-8")))
+
+
+def test_names_without_a_resume_and_same_names(service: AppService, tmp_path: Path) -> None:
+    root = tmp_path / "Contractors"
+    upsert_contractors(
+        [
+            ContractorProfile(talent_id="TAL-1", talent_name="Alex Martin", rate_expectation="90"),
+            ContractorProfile(
+                talent_id="TAL-2", talent_name="Émilie Tremblay", rate_expectation="90"
+            ),
+            ContractorProfile(
+                talent_id="TAL-3", talent_name=" alex  MARTIN", rate_expectation="90"
+            ),
+        ],
+        CsvContractorProfileRepository(root / "contractors.csv", lock_timeout=5),
+    )
+    (root / "resumes").mkdir()
+    (root / "resumes" / "TAL-2.pdf").write_bytes(b"%PDF-1.4\n")
+    info = service.pick_contractor_folder(root)
+    assert info.missing_resumes == ["Alex Martin", " alex  MARTIN"]
+    assert info.same_name == ["Alex Martin"]  # once, in file order
+    service.run(echo=lambda s: None, confirm=lambda c: False, match=False)
+    flagged = {t.talent_id: t.same_name_ids for t in service.talent_overview()}
+    assert flagged == {"TAL-1": ["TAL-3"], "TAL-2": [], "TAL-3": ["TAL-1"]}
+    # Stored résumés count: picking the file again names only those still without one.
+    again = service.pick_contractor_file("contractors.csv", path=root / "contractors.csv")
+    assert again.missing_resumes == ["Alex Martin", " alex  MARTIN"]
+
+
+# ---- remembered folders and links ----
+
+
+def test_the_contractors_folder_is_remembered(service: AppService, tmp_path: Path) -> None:
+    with pytest.raises(AppError, match="remembered"):
+        service.reimport_contractors()
+    path = contractor_file(tmp_path)
+    root = path.parent
+    service.pick_contractor_folder(root)
+    assert service.contractors_folder() == root
+    assert read_env_file(service.env_path)["JOBMATCH_CONTRACTORS_FOLDER"] == str(root)
+    service.clear_contractor_picks()
+    info = service.reimport_contractors()
+    assert info.contractors == 1 and service.contractor_file == path
+    service.forget_contractors_folder()
+    assert service.contractors_folder() is None
+    service.pick_contractor_folder(root)
+    root.rename(tmp_path / "moved")
+    with pytest.raises(AppError, match="not there any more"):
+        service.reimport_contractors()
+
+
+def test_links_are_validated_and_saved(service: AppService) -> None:
+    assert service.links() == {"intake_form": "", "intake_sheet": "", "job_collector_sheet": ""}
+    service.save_link("intake_form", "  https://forms.example.ca/abc?x=1  ")
+    assert service.links()["intake_form"] == "https://forms.example.ca/abc?x=1"
+    assert read_env_file(service.env_path)["JOBMATCH_LINK_INTAKE_FORM"].endswith("?x=1")
+    with pytest.raises(AppError, match="http"):
+        service.save_link("intake_sheet", "docs.google.com/spreadsheets/d/1")
+    with pytest.raises(AppError, match="Unknown"):
+        service.save_link("other", "https://x.ca")
+    service.save_link("intake_form", "")
+    assert service.links()["intake_form"] == ""
+
+
+def test_jobs_folder_imports_only_new_files(service: AppService, tmp_path: Path) -> None:
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    with pytest.raises(AppError, match="No jobs folder"):
+        service.import_jobs_folder()
+    with pytest.raises(AppError, match="Not a folder"):
+        service.set_jobs_folder(tmp_path / "nope")
+    service.set_jobs_folder(jobs)
+    assert service.jobs_folder() == jobs
+    (jobs / "links.txt").write_text("https://jobs.example.ca/1\n", encoding="utf-8")
+    (jobs / "notes.docx").write_bytes(b"x")  # not a job file
+    (jobs / ".hidden.txt").write_text("https://jobs.example.ca/9\n", encoding="utf-8")
+    (jobs / "empty.txt").write_text("\n", encoding="utf-8")
+    first = service.import_jobs_folder()
+    assert first.new_files == 1 and len(first.problems) == 1 and "empty.txt" in first.problems[0]
+    assert len(list((service.data_dir / "inbox" / "links").iterdir())) == 1
+    again = service.import_jobs_folder()
+    assert again.new_files == 0 and again.problems == []  # seen, even the empty one
+    (jobs / "links.txt").write_text("https://jobs.example.ca/1\nhttps://jobs.example.ca/2\n")
+    assert service.import_jobs_folder().new_files == 1  # a changed file is new
+    service.set_jobs_folder(None)
+    assert service.jobs_folder() is None
+
+
+# ---- sync on start, waiting jobs, home summary ----
+
+
+def test_sync_on_start_reports_a_missing_folder(service: AppService, tmp_path: Path) -> None:
+    root = contractor_file(tmp_path).parent
+    service.pick_contractor_folder(root)
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    service.set_jobs_folder(jobs)
+    root.rename(tmp_path / "gone")
+    jobs.rmdir()
+    summary = service.sync_on_start()
+    assert not summary.ran and len(summary.problems) == 2
+    assert "not there any more" in summary.problems[0]
+
+
+def test_home_summary_follows_the_pipeline(
+    service: AppService, store: CsvStore, make_job: Callable[..., Job], tmp_path: Path
+) -> None:
+    empty = service.home_summary()
+    assert (empty.contractors, empty.jobs, empty.jobs_waiting, empty.matches_waiting) == (0,) * 4
+    assert empty.last_run_at is None and empty.last_contractors_at is None
+    add_jobs(store, make_job)
+    path = contractor_file(tmp_path)
+    service.pick_contractor_file(path.name, path=path)
+    service.run(echo=lambda s: None, confirm=lambda c: False, match=False)
+    before = service.home_summary()
+    assert (before.contractors, before.jobs, before.jobs_waiting) == (1, 3, 3)
+    assert before.matches_waiting == 0 and before.last_contractors_at is not None
+    assert before.last_run_at is not None
+    service.run(echo=lambda s: None, confirm=lambda c: False)
+    after = service.home_summary()
+    assert (after.jobs_waiting, after.matches_waiting) == (0, 2)  # two jobs have a candidate
+    service.decide(service.results()[0].matches[0].match.match_id, Decision.APPROVED)
+    assert service.home_summary().matches_waiting == 1
+
+
+def test_home_summary_on_a_fresh_empty_data_dir(service: AppService) -> None:
+    assert not service.data_dir.exists() or not any(service.data_dir.iterdir())
+    summary = service.home_summary()
+    assert (summary.contractors, summary.jobs, summary.jobs_waiting) == (0, 0, 0)
+    assert summary.matches_waiting == 0 and summary.last_run_at is None
+
+
+def test_talent_overview_carries_availability_and_profile_age(service: AppService) -> None:
+    upsert_contractors(
+        [
+            ContractorProfile(
+                talent_id="TAL-9",
+                talent_name="Jo Lee",
+                rate_expectation="90",
+                availability="From 2026-12-01",
+                profile_updated=date(2026, 11, 2),
+            ),
+            ContractorProfile(talent_id="TAL-8", talent_name="Sam Roy", rate_expectation="90"),
+        ],
+        CsvContractorProfileRepository(service.settings.paths.contractors_csv, lock_timeout=5),
+    )
+    by_id = {t.talent_id: t for t in service.talent_overview()}
+    assert by_id["TAL-9"].availability == "From 2026-12-01"
+    assert by_id["TAL-9"].profile_updated == date(2026, 11, 2)
+    assert by_id["TAL-8"].availability is None and by_id["TAL-8"].profile_updated is None

@@ -36,15 +36,18 @@ from pathlib import Path
 
 from pydantic import BaseModel, field_validator, model_validator
 
-from jobmatch.normalize.contact import EMAIL, contact_email
+from jobmatch.normalize.contact import EMAIL, find_contact
 from jobmatch.normalize.pipeline import job_id_for
-from jobmatch.schemas import Commitment, Job, JobStatus, PayUnit, RemoteType
-from jobmatch.sources.paste import PasteFormatError, canonical_url
+from jobmatch.schemas import Commitment, Job, JobStatus, PayUnit, RemoteType, web_url_or_none
+from jobmatch.sources.paste import PasteFormatError, canonical_url, collector_text
 
 COLUMNS = (
     "url", "job_title", "company", "contact_person", "contact_email", "location", "work_mode",
     "hours_per_week", "pay", "pay_type", "posted_date", "responsibility", "qualification",
 )  # fmt: skip
+# Accepted when present, never required, not written to the template: the contact's phone,
+# the apply link, and the job collector's two plain-words lines.
+OPTIONAL_COLUMNS = ("contact_phone", "apply_url", "why_kept", "fits_roles")
 REQUIRED = ("url", "job_title")
 LIST_COLUMNS = ("responsibility", "qualification")
 JOB_CSV_SUFFIX = ".csv"
@@ -186,6 +189,10 @@ class JobEntry(BaseModel):
     posted_date: str = ""
     responsibility: list[str] = []
     qualification: list[str] = []
+    contact_phone: str = ""
+    apply_url: str = ""
+    why_kept: str = ""
+    fits_roles: str = ""
 
     @field_validator("url", "job_title", mode="after")
     @classmethod
@@ -193,6 +200,11 @@ class JobEntry(BaseModel):
         if not value:
             raise ValueError("is empty")
         return value
+
+    @field_validator("apply_url", mode="after")
+    @classmethod
+    def _web_link_only(cls, value: str) -> str:
+        return web_url_or_none(value) or ""  # not a web link: blank, so the posting's own is used
 
     @field_validator("contact_email", mode="after")
     @classmethod
@@ -246,7 +258,7 @@ class JobEntry(BaseModel):
     @classmethod
     def from_cells(cls, cells: dict[str, str | None]) -> "JobEntry":
         data: dict[str, object] = {}
-        for column in COLUMNS:
+        for column in COLUMNS + OPTIONAL_COLUMNS:
             raw = cells.get(column)
             data[column] = clean_items(raw) if column in LIST_COLUMNS else clean_cell(raw)
         return cls.model_validate(data)
@@ -276,6 +288,9 @@ class JobEntry(BaseModel):
             *(f"- {q}" for q in self.qualification),
         ]
         text = "\n".join(lines)
+        contact = find_contact(text, posting_url=url)
+        email = self.contact_email or contact.email
+        others = [a for a in (contact.email, *contact.other_emails) if a and a != email]
         return Job(
             job_id=job_id_for(source, source_id),
             source=source,
@@ -298,8 +313,13 @@ class JobEntry(BaseModel):
             posted_at=posted,
             first_seen_at=now,
             status=JobStatus.NEW,
-            contact_email=self.contact_email or contact_email(text),
-            contact_person=self.contact_person or None,
+            contact_email=email,
+            contact_person=self.contact_person or contact.person,
+            contact_other_emails=others,
+            contact_phone=self.contact_phone or contact.phone,
+            apply_url=self.apply_url or contact.apply_url,
+            why_kept=collector_text(self.why_kept) or None,
+            fits_roles=collector_text(self.fits_roles) or None,
         )
 
 
@@ -326,7 +346,7 @@ def read_job_csv(
     header = [h.strip().lower() for h in next(reader, [])]
     if not header:
         raise JobCsvError(f"{path.name}: the file is empty (no header row)")
-    unknown = [h for h in header if h and h not in COLUMNS]
+    unknown = [h for h in header if h and h not in COLUMNS + OPTIONAL_COLUMNS]
     missing = [c for c in REQUIRED if c not in header]
     if unknown or missing:
         problems = []
