@@ -4,6 +4,220 @@ What each change solves, for the team. Newest first. Add an entry with every com
 
 ---
 
+## 2026-11-24 · Profile edits survive imports until the contractor file changes
+
+### What this solves
+- An edit made in the app (Talent › Profile › Edit › Save) was lost at the next contractor import whenever the file still had the old values, even if the file itself had not changed. With imports now happening automatically (remembered folders, Get latest), edits would have been undone in the background.
+- The contractor folder (or the downloaded copy) stays the master. The app now keeps a **master record**, `data/contractors/contractors_master.csv`: each person's row as the last import brought it, never edited in the app. Each import compares the file with it:
+  - row unchanged in the file: the edited row is kept;
+  - row changed in the file: only the fields that changed are taken, the other edits stay; a field changed in both takes the file's value;
+  - no master record yet: the file wins once, as before, and the record is written.
+- The run log and progress box report "N edited in the app, kept".
+
+### How to use
+- Nothing to set up. The first import after updating works the old way once (edits made before it are replaced), then the rule applies.
+- `build-contractors` writing the app's own list also writes the master record. The record is included in **Export all data**, and the backup check validates it.
+- Code: `contractor_upsert.upsert_contractors(..., master)` and `merge_master_change`, `csv_store.master_path`, `loader.contractors_master`, `pipeline.py`. A Profile save passes no master, so it never changes the record.
+- Tests: `tests/test_contractor_upsert.py` (unchanged master keeps edits, field-level merge, conflict, first import, new and missing people, Profile save, backup check); `tests/test_talent_edit.py::test_edit_kept_until_master_changes`.
+
+---
+
+## 2026-11-24 · Window fits the screen, a busy Google is said plainly, first Get latest is the baseline
+
+### What this solves
+- **The desktop window fits the screen.** It opened at a fixed 1200 x 860, which runs off a laptop screen (effective 1280 x 720). The size is now the smaller of that and 92% of the free screen area (screen minus taskbar), resizable, with a sensible minimum; on a screen too small for the preferred size it starts maximized. Code: `app/window_fit.py`, used by `app/__main__.py` (Windows and macOS read the free area; anywhere else the old size is used).
+- **A busy Google is no longer "nothing new".** When jobs fail because Google answers 503 or is busy, the finished message and the result card now say "1 job could not be checked because Google was busy: press Find matches again in a minute." The Jobs tile keeps "1 not checked yet" and gives the same reason on hover. Other trouble keeps its words, but a run with jobs left unchecked no longer says "nothing new to review". Code: `ui_progress.busy_jobs`, `busy_text`, `outcome_text`; the toast in `ui.run_indicator`. Your `JudgeRunReport.busy` is what it reads.
+- **The first Get latest is the baseline.** The "+30 new" and "+3 new" badges on the Contractors and Jobs rows were set by Get latest itself and ignored the first-load rule. The first successful load of each list now records no "new"; later loads that add items still show the badge (`AppService._get_latest`).
+- **Find matches before a key is added** opens the Add-your-key step with one plain line ("Add your key first: Find matches needs it") instead of starting a search that stops with an error. Save without matching needs no key (`AppService.needs_key`).
+
+### How to use
+- Nothing to set up.
+- Tests: `test_window_fit.py`; in `test_home_next_step.py` the busy wording, the finished message and the no-key click; in `test_sync_ui.py` the first-load baseline. `test_sync_client.py` now expects no "+2 new" after the very first download.
+
+---
+
+## 2026-11-24 · Plainer result line, first load is not "new", Profile pop-up opens as a read view
+
+### What this solves
+- **The result after a search counts this run's jobs.** Home said "Done: 6 jobs with suggestions, 0 with no match" when only 3 jobs were new in that run (the summary counts every stored job). The card now says "3 new jobs checked: 3 with matches" (also "2 with matches, no match" and "N not checked yet"). It reads what the run itself saved (`ui_progress.outcome_text`). The run's own `run_summary` is unchanged and still used for "saved without matching" and as a fallback.
+- **The first download is the baseline.** On the first launch after the very first load the tiles showed "+30 new" for everything. The first successful load of the contractors and of the jobs is now remembered (`people_baseline_at`, `jobs_baseline_at` in `app_state.json`); "+N new" and the "New" tags count only what arrives after it. A list loaded by an older version has no baseline and counts as before.
+- **The Profile pop-up opens as a plain read view.** Save and the empty Note box are hidden until **Edit** is pressed; a saved note shows as text. Same dialog, same fields, same Save (`service.save_profile`): after Edit nothing differs from before.
+
+### How to use
+- Nothing to set up. Code: `ui_progress.outcome_text`, `AppService._note_run` / `_looked_at`, `ui._profile_dialog`.
+- Tests: two lines in `test_run_job.py` and `test_ui_home.py` now wait for "checked:" instead of "Done:"; `test_new_since_last_time` follows the baseline; new tests for the result line, an older state file and the read view.
+
+---
+
+## 2026-11-24 · Polish after an end-to-end run: Get latest shows progress, one job count, clearer first run
+
+### What this solves
+- **Get latest is no longer silent.** While it runs, Home shows one card: "Getting your contractors… 30 found", then "Getting your jobs… 40 of 71", with a thin bar (the same look as the matching card). Jobs are asked 20 files at a time (was 100), so the numbers move every few seconds. A later download cannot know how many files are coming, so it says "12 found so far" instead of inventing a total. When it ends there is ONE message ("3 new people, 70 new jobs") with the button for what comes next (Add your key, Find matches or Review).
+- **One job count.** Home, the Jobs tile and the Jobs page all show the jobs the Jobs page lists. Jobs the import left out (not a contract job, not in Canada, a copy of another job, too few details) are no longer counted anywhere; a quiet "1 job left out: see why" (Home and Jobs) lists each one with its reason. Job files that could not be read have their own line, "1 job file could not be read", with "See why".
+- **New contractors that are not there yet.** The download link does not say how many sign-ups are still being read, so a quiet line under the Contractors row says new sign-ups appear once their résumé has been read, usually within the hour.
+- **First run:** the key step now says why it is needed ("The key lets the app read each job against your contractors") and "Where do I get one?" is a three-step guide with the page and button names from `doc/FIRST_LAUNCH.md` (Google AI Studio, Get API key, Create API key). The checklist now goes away at once when the last step is done (before, the two big file cards stayed until the next click).
+- **Review mode end screen:** Export and Back to Home come before the list of approved people, so a long list never hides them.
+- **"What the app did"** is closed by default, newest sentence on top, plain sentences only, and the link can never appear in it. It also says what Get latest brought. The last search's result card no longer stays on Home once nothing is left to review.
+- **Wording:** "your do good link" everywhere; no "token" in the Gemini line; every icon-only button has a tooltip (the "?" help icons, the toast close button and the Profile pop-up close button were missing one).
+
+### How to use
+- Nothing to set up. `tests/fake_sync_server.py` gained `/_ctl?add_left_out=1` and its new jobs are always newer than the ones it already holds.
+- Code: `sync_client.Progress` (read by `ui_sync.LatestPanel`), `AppService.jobs_listed()` and `jobs_left_out()`, `ui_help.reasons_dialog`.
+
+---
+
+## 2026-11-24 · Get latest meets the real Google side (run against the rehearsal copy)
+
+### What this solves
+- The first draft of the download contract had changed; the app now follows the current one: `since` on the contractors manifest is only ever the saved etag (a refused etag is asked again in full instead of failing), a "changed" answer waits the 20 seconds Google asks for just like "busy" (before it waited 3), at most two more tries, a résumé zip's own etag is the one remembered (even if the folder moved since the manifest call), a jobs zip that says "nothing new" is no longer read as a broken answer, and paging backwards with `before` keeps the boundary file once and never skips files that share the same time.
+- Jobs are asked 100 files at a time (was 200). Google reads about half a second per file, so a page of 200 could come close to the 2-minute limit; 71 real files took 36 seconds.
+- First-run card: with a link saved, the card now has its own **Get latest** button. Before, the Contractors and Jobs rows (and their button) are hidden until the checklist is done, so a person without a Gemini key had no way to ask again. **Skip** now waits for the card to go before the rows are redrawn.
+- `tests/fake_sync_server.py` and the sync tests follow the same contract (etag-only `since`, five-key and ten-key "nothing new", "at or before" paging, "changed" answers, csv bytes that hash exactly, a folder that moves between the manifest and the zip).
+
+### How to use
+- Nothing to set up. Same link, same Settings field.
+
+---
+
+## 2026-11-24 · Get latest: new contractors and jobs arrive by themselves
+
+### What this solves
+- New contractors (from the Google intake form) and new job files (from the daily job collector) landed in Google Drive, and the owner had to carry them to this computer by hand. Now the app fetches them through one private "do good link".
+- **Settings › Your do good link:** paste it once (a **Paste** button reads the clipboard), **Test link** says in plain words what it found ("It works. 31 contractors and 12 jobs found." / "This link was not recognised." / "No internet."), **Save link** keeps it in the local `.env` like the Gemini key. After saving, only its last 4 characters are ever shown ("It ends in …a1b2"). **Remove link** forgets it; what was downloaded stays.
+- **Home:** with a link saved, the Contractors and Jobs rows say where the list comes from ("31 contractors, from your intake form, checked today 9:10 am" + a **+2 new** badge) and the small refresh becomes **Get latest**. When the app opens it asks quietly in the background (a cheap "anything new?" question); only if something changed does it download, then it imports through the same code as the remembered folders (same checks, same report, no Gemini). The rows show "Getting latest…" meanwhile, and the window is never blocked.
+- **Offline or a broken link:** the app keeps working with the last copy and shows one calm line ("Could not reach your list, showing the last copy from Nov 23."). No stack trace, no red wall.
+- **First run:** an optional line "Have a do good link? Paste it and everything loads by itself." If a link is saved, steps 2 and 3 tick themselves after the first download.
+- **Change… still works exactly as before.** A folder picked by hand is never replaced by the quiet check at start-up; only a click on **Get latest** (or saving a link) makes the downloaded copy the source again.
+
+### How to use
+- Paste the link in Settings once. Nothing else to set up. No new packages (`httpx` was already there).
+- Downloads go to `synced/contractors` (`contractors.csv` + `resumes/<talent_id>.pdf`) and `synced/jobs` (the collector's `.txt` files) beside the `.env`. A contractor download is built in a temporary folder, every file is checked against the manifest hash, and only then swapped in: a broken download keeps the last good copy. Only the app's own `synced/` folder is touched.
+- Safety: HTTPS only (plain http to this computer only with the dev flag `JOBMATCH_DEV_ALLOW_LOCAL_SYNC=1`, for the test server); GET only; nothing is ever uploaded; the link never appears in logs, messages or the "What the app did" box.
+- Code: `src/jobmatch/sync_client.py` (download, no screen code), `AppService.get_latest()` and friends, `src/jobmatch/app/ui_sync.py`. Tests: `tests/test_sync_client.py`, `tests/test_sync_ui.py`, with a small fake of the Google side in `tests/fake_sync_server.py` (made-up people and jobs; not shipped).
+
+---
+
+## 2026-11-24 · The next step on top, "new since last time", matching that never looks frozen
+
+### What this solves
+- **Home:** under the four count tiles sits ONE main action that follows the state: **Add your key** → **Load contractors and jobs** → **Find matches for 4 new jobs** → **Review 6 matches** → a calm **All caught up** ("Last checked today 9:12 am, 2 approved"). The attention row that repeated "6 matches waiting" is gone; other items (missing résumé, folder problems) stay. **Contractors** and **Jobs** are one-line rows ("30 contractors, updated today 9:10 am") with **Change…** (opens the drop zone) and a small refresh (reads the remembered folders again, no Gemini). The drop zones stay open on a first run, while empty, and after a pick. The tiles are all clickable: Matches opens Review, Approved opens Results showing only approved people.
+- **First run:** a three-step card (key, contractors, jobs) instead of the tiles; each step ticks itself and the card goes away when all three are done. **Add your key** opens a small box, so nobody has to go to Settings; **Where do I get one?** opens the same explanation as the "?" on Settings.
+- **New since last time:** the app remembers when it was last opened (`app_state.json`). "+3 new" badges on the Contractors and Jobs tiles, and "New" tags on those rows in Jobs and Talent, until the screen has been opened. No counters, no reminders.
+- **Matching progress:** while a search runs the card on Home says "Job 2 of 5: Brand Designer", shows a bar over the jobs (it creeps inside a step, so a long job never looks stuck), "about 3 min left" worked out from the jobs already finished, and the plain sentences the run writes as a short live feed. Each job is listed as soon as Gemini's answer for it is saved, with its best match and a **Review** link. A "Matching 2 of 5" pill in the header (on every tab) takes you back. When the search ends: "Matching finished: 6 new matches" with **Review** (in the desktop app the taskbar button also flashes on Windows, or a notification shows on macOS).
+- **Smaller:** dates are plain everywhere in the new screens ("Dec 26, 2026", "today 9:12 am"); Review-mode messages show at the top, so they never cover the buttons of the end screen; "Details: why this match" looks like the other cards; if a decision brings someone new into the list, the counter grows with a small "+1 new candidate" note; Settings keeps the technical things (data folder, backup) under **Advanced**, and the folder rows have a **Browse…** button in the desktop app; "Nothing picked yet" is normal text.
+
+### How to use
+- Nothing to set up. No new packages, no data changes. The search itself is untouched: the progress is read from the lines and answers it already writes. There is no Stop button, because the run has no way to be stopped (closing the app mid-search is safe: finished jobs are kept and the next search carries on).
+- Tests: new ones for the plain dates, "new since last time", the progress reading and the Home main action; a few Home tests changed with the new layout.
+
+---
+
+## 2026-11-24 · Review mode, one-click emails, clearer status words
+
+### What this solves
+- Going through matches meant opening every row, then clicking. **Review mode** (`/review`) shows one match at a time, large: job, person, score, five key facts, the "why" behind **Details**, and the Résumé button. **Approve / Needs info / Reject** sit in the same place every time (Reject still asks why), with a quiet Skip.
+- Keys: **1** approve, **2** needs info, **3** reject, **→** skip, **Z** undo, **?** shows them. After each verdict the next match appears at once, with a toast: **Undo** brings that match back with the verdict cleared; after an approve the toast also offers **Write the email**.
+- "3 of 9 reviewed" and a thin bar are always visible. When nothing is left: **All caught up**, with counts (approved / needs info / rejected / skipped), one **Write the email** button per approved person, **Export to Excel** and **Back to Home**. Leave halfway and Home says "4 left to review"; **Continue reviewing** picks up where you stopped.
+- Home: while matches wait, **Review N matches** is the main button and Find matches becomes the quiet one. Results has the same button.
+- **Results rows:** **Write the email** is on the closed row next to the verdict buttons. An approved match no longer shows Approve beside "Approved" (a job could end up with two approvals); the tag's undo arrow clears it, and Reject / Needs info stay for changing your mind.
+- **Client emails** now hold only the person's strengths (what they meet, plus the AI's sentences that contain nothing negative). Gaps, flags, scores and field names never appear in them. The full AI reasoning stays on screen, in a closed box in the email pop-up. Contractor emails are signed with the name from Settings (neutral line if none), and the pop-up says plainly when there is no address to put in **To**.
+- **Jobs:** a job with matches and people not yet checked reads "Checked · 2 matches · best score 98" plus "3 new people not checked yet", instead of a contradicting "Not checked yet".
+- **Talent:** one meaning of available. The switch is **Include in matching** (your call); the coloured tag is the profile's real-world availability (Available now, Available from…, Booked until…). The header counts add up: available now, booked or free later, left out of matching. New **filter** (Available now, Booked or free later, Left out of matching) and **sort** (Name, Recently updated). The Profile pop-up shows plain labels (Headline, Core strengths…) instead of column names; the stored names are unchanged. The Note box no longer overlaps what you type.
+
+### How to use
+- Nothing to set up. The wording of the client email lives in `config/email_templates.yaml` (`{why}` and `{highlights}` replace the old `{match_text}` / `{reason}` lines in the contractor block; an older file that still uses `{reason}` gets the strengths-only text).
+- No new packages and no data changes: decisions use the same Approve / Reject / Undo records as Results.
+
+---
+
+## 2026-11-23 · Usability improvements (layered on the 2026-11-18 talent-update release)
+
+### What this solves
+- A reviewer had to know the order of steps, read long notes, and could not see at a glance what needed them.
+- **Home** shows Contractors → Jobs → Matches → Approved with live counts, what needs attention, and what the app found in the remembered folders. A new app shows a three-step guide.
+- **Fewer clicks:** one main button (Find matches); one new job starts matching by itself; several ask "Match N jobs now?"; files can be dropped on the window (including a `Contractors.zip`); matches, jobs and talent are short rows that open on click; Approve, Reject and the like have an Undo toast.
+- **Clearer messages:** plainer words ("Save without matching", "checked"), long notes behind a `?`, a calm message with Try again when a step fails, "save as CSV UTF-8" instead of a codec error, the names of people with no résumé PDF, and a flag for two people with the same name.
+- **More about each person and job:** availability and profile age on a contractor; contact name, email, phone and apply link on a job; the job collector's "why kept" / "fits" lines.
+- **Write the email:** a button on a match prepares an email to the client or to the contractor. The app never sends it: you copy it or open your own email program.
+
+### How to use
+- Optional contractor columns `availability` and `profile_updated` (`YYYY-MM-DD`). Stored, never sent to Gemini. Without them nothing changes.
+- Optional job inputs: `# why kept:` and `# fits:` lines in a pasted job file; `contact_phone`, `apply_url`, `why_kept`, `fits_roles` columns in the jobs CSV. Phone numbers are masked as `[phone]` in the Gemini text, like emails.
+- `talent_id_prefix` in `config/contractor_import.yaml`; the wording of the emails in the new `config/email_templates.yaml` (a missing file falls back to built-in texts).
+- The Contractors and jobs folders and the links are remembered in the app's `.env`. Starting the app re-reads them and saves what is new; it never calls Gemini.
+- Matching starts by itself only for a single new job with nothing waiting; otherwise the app asks.
+- No new packages. Existing data keeps working. Screen wording changed, so some screen tests and a few log lines changed with it.
+- Tests: see MERGE-NOTES.txt for the merged run.
+
+---
+
+## 2026-11-18 · Old automatic backups are deleted at start-up
+
+### What this solves
+- The app keeps a copy of a CSV file every time it rewrites one, so `data/backups/` kept growing.
+
+### How to use
+- Nothing to do: when the app starts, it deletes its **automatic** backups older than 30 days (`storage.backup_retention_days` in `config/settings.yaml`):
+  - `data/backups/<table>.<timestamp>Z.csv` (copies made before a rewrite);
+  - `data/backups/removed-judgments/<timestamp>Z-<job>/` (Gemini's results of deleted jobs);
+  - `data/contractors/backups/` and `data/eval/backups/`.
+- The age comes from the timestamp in the name. Files without the app's timestamp are left alone.
+- **Never deleted:** exports and uploaded backups (`data/backups/exports/`, `uploads/`), `reset-*` and `cleanup-*` folders, backups named by hand, and old résumés in `resumes/old/`.
+- **The deletion is permanent.** To keep a backup longer, copy it elsewhere or make an Export.
+- The app's log records how many were deleted (counts only).
+
+---
+
+## 2026-11-18 · Talent screen: edit profiles, notes in the profile, add or replace résumés
+
+### What this solves
+- Profiles could only change through the next contractor import, and a missing résumé could only be added by importing the folder again.
+- The card's Save button was easy to forget after flipping the availability switch.
+
+### How to use
+- **Availability:** flipping the switch on a contractor card saves at once ("Saved: not available."). The Save button is gone.
+- **Profile › Edit:** the fields become editable; lists take one item per line. **Save** checks every field like an imported row and saves nothing if one is wrong.
+  - The app's contractor list (`data/contractors/contractors.csv`) is backed up before each save.
+  - When something Gemini sees changed, the contractor is matched again on the next **Find matches** run (this uses Gemini calls on that run). A name change alone doesn't.
+  - `talent_id` can't be edited (the résumé is named by it).
+  - **A later contractor import with other values for that contractor replaces the edit**: fix the source file too.
+- **Note:** written in the Profile pop-up and saved with its Save button (new `data/talent_notes.csv`, append-only, latest counts; an empty note clears it). The card shows it read-only. Notes saved earlier with an availability change still show until a new one is saved.
+- **Résumé:**
+  - No résumé on file: the grey button now opens a PDF picker; the file is stored right away as `<talent_id>.pdf`.
+  - Résumé on file: the viewer has **Replace résumé**. After picking a file, **Save** (with Cancel) appears; only Save replaces the stored file. The old copy moves to `data/contractors/resumes/old/` with a timestamp.
+  - Only real PDFs are accepted. The picked file's own name is never kept or logged.
+  - The Results screen's Résumé and Profile buttons stay view-only.
+- No new packages. One new data file (`talent_notes.csv`), created on the first note; exports and backups include it.
+
+---
+
+## 2026-11-18 · Plain-language progress box on Find matches
+
+### What this solves
+- The progress box showed technical log lines (model names, budgets, token counts), hard to read for a reviewer who isn't technical.
+
+### How to use
+- The box now shows short plain sentences, one per line, in a slightly larger font, e.g. "Contractors: 4 new, 0 updated, 0 unchanged." and "Checking 2 jobs with Gemini.".
+- When Gemini is too busy (no answer in time, too many requests per minute, or "overloaded") and jobs were left unchecked, it says **"Gemini timed out, high traffic, please try again."**
+- At the end it shows the result in bold: **"Successful: 3 matched, 1 no matches."** (plus "N not checked yet" when some jobs still wait). A run cut short says "Stopped early: …".
+- The technical lines, including the tokens of every Gemini call, still go to the app's log, and the command line (`jobmatch run-once`) prints them as before. Today's Gemini usage still shows under the box.
+- No new packages, columns or files.
+
+---
+
+## 2026-11-18 · A hire no longer makes the contractor unavailable
+
+### What this solves
+- A contractor can work on several projects if their time allows. Before, setting an application to **Hired** switched their "Available for matching" off, so they stopped getting matched to other jobs.
+
+### How to use
+- **Hired** still marks the job completed (off Results, never scanned again). The contractor stays available.
+- To stop matching someone who is fully booked, turn off **Available for matching** on the Talent screen yourself.
+- Contractors made unavailable by a hire under the old rule stay that way. Undoing that hire (setting the status back to anything else) still restores their earlier availability, unless a reviewer changed it since. Otherwise switch them back on the Talent screen.
+- No new packages, columns or files.
+
+---
+
 ## 2026-11-17 · Release v1.0.0
 
 ### What this solves

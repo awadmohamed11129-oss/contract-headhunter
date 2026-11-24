@@ -169,6 +169,7 @@ class JudgeRunReport(BaseModel):
     total_tokens: int = 0
     exhausted: list[str] = []  # models that reached their daily limit during the run
     timed_out: list[str] = []  # review models that did not answer in time (skipped after)
+    busy: int = 0  # calls that failed from high traffic: timeout, per-minute limit, HTTP 503
 
 
 class Chain:
@@ -232,6 +233,10 @@ class Chain:
             self.report.exhausted.append(model)
         if outcome.usage.status is LlmCallStatus.TIMEOUT and model not in self.report.timed_out:
             self.report.timed_out.append(model)
+        if outcome.usage.status in (LlmCallStatus.TIMEOUT, LlmCallStatus.RATE_LIMITED) or (
+            outcome.usage.status is LlmCallStatus.ERROR and outcome.usage.http_status == 503
+        ):
+            self.report.busy += 1
         return outcome
 
     def unavailable(self, model: str) -> bool:

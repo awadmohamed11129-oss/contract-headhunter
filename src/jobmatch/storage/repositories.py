@@ -21,6 +21,7 @@ from jobmatch.schemas import (
     Run,
     ScanRecord,
     TalentAvailability,
+    TalentNote,
 )
 
 
@@ -124,9 +125,13 @@ class DataLoader(Protocol):
     job_rounds: AppendRepository[RoundEvent]
     applications: AppendRepository[Application]
     talent_availability: AppendRepository[TalentAvailability]
+    talent_notes: AppendRepository[TalentNote]
     contractor_changes: AppendRepository[ContractorChange]
     removed_jobs: AppendRepository[RemovedJob]
     contractors: ContractorProfileRepository
+    # The rows as the last contractor import brought them, never edited in the app: what the
+    # next import compares the file with (contractor_upsert, user decisions 2026-11-24).
+    contractors_master: ContractorProfileRepository
     llm_matches: LlmMatchRepository
     reviews: ReviewRepository
     runs: RunRepository

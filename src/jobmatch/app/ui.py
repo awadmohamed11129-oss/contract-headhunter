@@ -9,8 +9,9 @@ Screens:
               an Unavailable toggle, Reopen and Delete for closed jobs (a job is completed
               when an application is set to Hired).
 - "/talent"   Every contractor, with the "Available for matching" toggle (the reviewer's
-              call), the jobs they were approved for and their résumé. Profiles are
-              read-only here.
+              call, saved when flipped), the jobs they were approved for, their
+              profile (editable, with the reviewer's note) and their résumé (add or
+              replace a PDF).
 - "/settings" Gemini key (never shown back), reviewer name, data folder.
 
 The run is blocking, so it goes to a worker thread (run.io_bound). Its progress lines reach
@@ -26,7 +27,7 @@ import sys
 import threading
 import unicodedata
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -35,17 +36,14 @@ from fastapi.responses import FileResponse
 from nicegui import app as nicegui_app
 from nicegui import background_tasks, run, ui
 from nicegui.events import (
-    GenericEventArguments,
     UploadEventArguments,
     ValueChangeEventArguments,
 )
 
+from jobmatch.app import ui_email
 from jobmatch.app.service import (
-    JOB_SUFFIXES,
-    UPLOAD_SUFFIXES,
     AppError,
     AppService,
-    ContractorFileInfo,
     JobAction,
     JobOverview,
     JobResult,
@@ -53,6 +51,21 @@ from jobmatch.app.service import (
     MatchView,
     TalentOverview,
 )
+from jobmatch.app.ui_help import (
+    HELP_CSS,
+    KEY_HELP,
+    failure_card,
+    help_icon,
+    left_out_dialog,
+    plain_dates_in,
+    plain_day,
+    plain_when,
+    plural,
+    toast,
+    undo_toast,
+)
+from jobmatch.app.ui_progress import PROGRESS_CSS, RunTracker, busy_jobs, busy_text, notify_os
+from jobmatch.app.ui_sync import link_card
 from jobmatch.app_paths import APP_TITLE
 from jobmatch.backup import BackupInfo, backup_name
 from jobmatch.llm.matches import MEETS_SEP
@@ -61,12 +74,14 @@ from jobmatch.pipeline import PipelineError, RunOnceReport
 from jobmatch.schemas import (
     ApplicationStatus,
     Commitment,
+    ContractorProfile,
     Decision,
     Job,
     JobAvailability,
     ReasonCode,
     RemoteType,
     Review,
+    web_url_or_none,
 )
 from jobmatch.sources.contractor_upsert import ContractorFileError
 from jobmatch.storage.csv_store import CsvStoreError
@@ -94,7 +109,8 @@ WORDMARK_HTML = (
     '<path class="bs" d="PATH" pathLength="100"/><path class="tr" d="PATH" pathLength="100"/>'
     '</svg><span>d</span></div><div class="brand-tag">a talent company</div></div>'
 ).replace("PATH", INF_PATH)
-APP_CSS = """
+APP_CSS = (
+    """
 body { font-family: Inter, "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
   counter-reset: dgstep; }
 .q-layout { position: relative; z-index: 1; }
@@ -128,7 +144,9 @@ body { font-family: Inter, "Segoe UI", system-ui, -apple-system, Roboto, sans-se
 .q-header .nav-btn:hover { background: rgba(255,255,255,.12); color: #fff !important; }
 .q-header .nav-btn.nav-active { background: rgba(255,255,255,.2); color: #fff !important;
   box-shadow: inset 0 -3px 0 #fff; }
-.dg-sheet { border: 3px solid #DDD9F0; animation: rise .45s ease both; }
+/* "backwards", not "both": a finished animation would keep the sheet the reference for fixed
+   elements inside it, and the bottom message of Review mode would sit on its buttons. */
+.dg-sheet { border: 3px solid #DDD9F0; animation: rise .45s ease backwards; }
 @keyframes rise { from { opacity: 0; transform: translateY(12px); } }
 .q-card { border-radius: 1.5rem; border: 2px solid #E4DFF3;
   box-shadow: 0 6px 22px rgba(89,59,157,.10), 0 1px 3px rgba(89,59,157,.08); }
@@ -150,16 +168,27 @@ body { font-family: Inter, "Segoe UI", system-ui, -apple-system, Roboto, sans-se
 .q-expansion-item .q-item { border-radius: .75rem; }
 .q-expansion-item .q-item:hover { background: #F6F2FC; }
 .nicegui-log { border-radius: 1.25rem; border: 2px solid #E4DFF3; background: #FBFAFE; }
+.dg-main-sm { padding: 6px 18px; border-radius: 1.1rem !important; }
+.dg-clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; }
+.dg-compact .q-item { padding: 2px 4px; min-height: 0; }
+.dg-compact .q-expansion-item__content { padding: 4px 4px 8px; }
+.dg-row .q-item { padding: 4px 8px; min-height: 0; }
+.dg-row .q-expansion-item__content { padding: 4px 8px 10px; }
 @media (prefers-reduced-motion: reduce) {
   *, ::before, ::after { animation: none !important; transition: none !important; } }
 """
+    + HELP_CSS
+    + PROGRESS_CSS
+)
 
 # Highlights the current screen's nav button.
 NAV_JS = """<script>
 if (!window.__dgNav) {
   window.__dgNav = setInterval(() => {
     document.querySelectorAll('.nav-btn').forEach((b) =>
-      b.classList.toggle('nav-active', b.getAttribute('data-path') === location.pathname));
+      b.classList.toggle('nav-active', b.getAttribute('data-path') ===
+        (location.pathname === '/review' ? '/results' : location.pathname)));
   }, 150);
 }
 </script>"""
@@ -183,9 +212,9 @@ RUN_ERRORS = (
 
 OUTCOME_TEXT = {
     "fits": ("Clear fits", "positive"),
-    "check_partial": ("No clear fit: best partial match, check by hand", "warning"),
-    "no_match": ("No match: nobody in the contractor list fits", "grey"),
-    "not_judged": ("Not judged yet: click Find matches", "grey"),
+    "check_partial": ("No clear fit: closest person, please check by hand", "warning"),
+    "no_match": ("No match: nobody on your contractor list fits", "grey"),
+    "not_judged": ("Not checked yet: click Find matches", "grey"),
 }
 REASON_TEXT = {
     ReasonCode.WRONG_SKILLS: "Wrong skills",
@@ -257,7 +286,7 @@ def pick_row(label: str, icon: str, marker: str) -> tuple[ui.button, ui.label]:
         )
         note = (
             ui.label(NOTHING_PICKED)
-            .classes("text-sm text-grey-7 font-mono truncate min-w-0")
+            .classes("text-sm text-grey-7 truncate min-w-0")
             .mark(f"{marker}-path")
         )
     return button, note
@@ -356,19 +385,21 @@ PAY_TYPE_CHOICES = {"hourly": "Hourly", "salary": "Salary (per year)"}
 FORM_DEFAULTS = {"work_mode": "", "pay_type": "hourly"}
 
 
-def job_form(service: AppService, on_saved: Callable[[], None]) -> None:
+def job_form(service: AppService, on_saved: Callable[[bool], None]) -> None:
     """One job typed or pasted by the reviewer. Saved as given (only cleaned of formatting);
-    the next Ingest or Find matches stores it."""
+    the next run stores it. `on_saved(again)`: again is True for "Save and add another"."""
     inputs: dict[str, ui.input | ui.textarea | ui.select] = {}
     with (
         ui.dialog() as dialog,
         ui.card().classes("job-form").style("width: 760px; max-width: 95vw"),
     ):
-        ui.label("Add a job by hand").classes("text-h6")
-        ui.html(
-            "Paste or type the details. Formatting from the posting (bullets, bold, extra "
-            'spaces and empty lines) is removed. <span class="required-mark">*</span> Required.'
-        ).classes("text-sm text-grey-8")
+        with ui.row().classes("items-center gap-1"):
+            ui.label("Add a job by hand").classes("text-h6")
+            help_icon(
+                "Paste or type the details. Formatting from the posting (bullets, bold, extra "
+                "spaces and empty lines) is removed. Fields marked * are required."
+            )
+        ui.label("Fields marked * are required.").classes("text-sm text-grey-8")
         with ui.grid(columns=2).classes("w-full gap-x-4 gap-y-1"):
             full_time = service.settings.normalize.full_time_hours_per_week
             for name, label, hint, kind in JOB_FORM_FIELDS:
@@ -399,8 +430,8 @@ def job_form(service: AppService, on_saved: Callable[[], None]) -> None:
             except AppError as exc:
                 ui.notify(str(exc), type="warning", multi_line=True)
                 return
-            ui.notify(f"Saved {entry.job_title}. Stored on the next Ingest.", type="positive")
-            on_saved()
+            ui.notify(f"Saved {entry.job_title}.", type="positive")
+            on_saved(again)
             if again:
                 for key, f in inputs.items():
                     f.value = FORM_DEFAULTS.get(key, "")
@@ -433,355 +464,36 @@ JOB_FORM_CSS = (
 REQUIRED_JOB_FIELDS = ("url", "job_title")
 
 
+def review_page(service: AppService, native: bool) -> None:
+    """Review mode lives in ui_review.py (it reuses the Results pieces from this file)."""
+    from jobmatch.app.ui_review import review_page as build  # noqa: PLC0415
+
+    build(service, native)
+
+
 def home_page(service: AppService, native: bool) -> None:
-    ui.add_css(JOB_FORM_CSS)
-    with ui.column().classes(f"{PAGE} gap-4") as page:
-        if not service.has_key():
-            with ui.card().classes("w-full bg-amber-50"):
-                ui.label("Add your Gemini key in Settings before the first run.")
-                ui.button("Open Settings", on_click=lambda: ui.navigate.to("/settings")).props(
-                    "flat"
-                )
+    """The Home screen lives in ui_home.py (it needs the pickers and RunJob from this file)."""
+    from jobmatch.app.ui_home import home_page as build  # noqa: PLC0415
 
-        with ui.card().classes("w-full gap-2"):
-            ui.label("Contractors (optional)").classes("text-h6 step-h")
-            count = ui.label().classes("text-sm text-grey-8")
+    build(service, native)
 
-            def show_count() -> None:
-                count.text = f"{service.contractor_count()} contractor(s) processed."
 
-            show_count()
-            picked = ui.label().classes("text-sm").mark("contractor-picked")
-            skipped = ui.label().classes("text-sm text-orange-9").mark("resumes-skipped")
-
-            def show(info: ContractorFileInfo) -> None:
-                what = []
-                if info.path is not None:
-                    what.append(f"{info.path.name}: {info.contractors} contractor(s)")
-                what.append(f"{info.resumes} résumé(s)")
-                picked.text = " · ".join(what) + ", stored when you click Ingest or Find matches."
-                picked.set_visibility(True)
-                skipped.text = f"Skipped (not named by a talent ID): {', '.join(info.unmatched)}"
-                skipped.set_visibility(bool(info.unmatched))
-
-            if native:
-                chooser, folder_note = pick_row(
-                    "Choose folder…", "folder_open", "contractor-folder"
-                )
-
-                def reset_contractors() -> None:
-                    folder_note.text = NOTHING_PICKED
-
-                async def browse() -> None:
-                    window = nicegui_app.native.main_window
-                    if window is None:
-                        ui.notify("The folder dialog is not available.", type="negative")
-                        return
-                    import webview  # only in the desktop app
-
-                    chosen = await window.create_file_dialog(webview.FileDialog.FOLDER)
-                    if not chosen:
-                        return
-                    try:
-                        info = service.pick_contractor_folder(Path(chosen[0]))
-                    except AppError as exc:
-                        ui.notify(str(exc), type="negative", multi_line=True)
-                        return
-                    folder_note.text = str(chosen[0])
-                    folder_note.tooltip(folder_note.text)
-                    show(info)
-
-                chooser.on_click(browse)
-            else:
-                # The browser's own folder chooser (user request): only the top-level
-                # contractor file and the PDFs in resume/ are sent, then checked one by one.
-                chooser, folder_note = pick_row(
-                    "Choose folder…", "folder_open", "contractor-folder"
-                )
-
-                def reset_contractors() -> None:
-                    folder_note.text = NOTHING_PICKED
-
-                async def contractor(e: UploadEventArguments) -> None:
-                    try:
-                        info = service.pick_contractor_file(e.file.name, data=await e.file.read())
-                    except AppError as exc:
-                        ui.notify(str(exc), type="negative", multi_line=True)
-                        return
-                    show(info)
-
-                def chosen(e: GenericEventArguments) -> None:
-                    service.clear_contractor_picks()
-                    folder, files = str(e.args.get("folder", "")), int(e.args.get("files", 0))
-                    contractor_files = int(e.args.get("contractor_files", 0))
-                    folder_note.text = folder or NOTHING_PICKED
-                    if contractor_files != 1:
-                        ui.notify(
-                            f"{folder}: expected exactly one contractor file (.xlsx or .csv) at "
-                            f"the top of the folder, found {contractor_files}.",
-                            type="negative",
-                            multi_line=True,
-                        )
-                    elif not files:
-                        ui.notify(f"{folder}: nothing to load.", type="warning")
-
-                upload = (
-                    ui.upload(on_upload=contractor, auto_upload=True, multiple=True)
-                    .props(f'accept="{",".join(UPLOAD_SUFFIXES)}"')
-                    .classes("hidden")
-                    .mark("contractor-folder-upload")
-                )
-                folder_input = (
-                    ui.element("input")
-                    .props("type=file webkitdirectory multiple")
-                    .classes("hidden")
-                )
-                folder_input.on(
-                    "change",
-                    chosen,
-                    js_handler=_FOLDER_JS.replace("UPLOAD_ID", str(upload.id)),
-                )
-                # Opened in the browser itself: a file chooser needs the click to be direct.
-                chooser.on("click", js_handler=f"() => getHtmlElement({folder_input.id}).click()")
-            # Under the picker row: what was picked, then any skipped PDFs.
-            picked.move(target_index=-1)
-            skipped.move(target_index=-1)
-            picked.set_visibility(False)
-            skipped.set_visibility(False)
-
-        with ui.card().classes("w-full gap-2"):
-            ui.label("Jobs").classes("text-h6 step-h")
-            ui.label(
-                "A jobs CSV (one row per posting, from the template), or add jobs one at a time "
-                "by hand. Jobs already imported are skipped: to change one, delete it on Jobs "
-                "and import it again."
-            ).classes("text-sm text-grey-8")
-
-            added = ui.column().classes("gap-0")
-
-            def jobs(name: str, data: bytes, path: Path | None) -> None:
-                try:
-                    info = service.add_jobs_file(name, data)
-                except AppError as exc:
-                    ui.notify(str(exc), type="negative", multi_line=True)
-                    return
-                if info.jobs is not None:
-                    what = f"{info.jobs} job(s)"
-                else:
-                    what = f"{info.links} link(s)" if info.kind == "links" else "a posting"
-                with added:
-                    ui.label(f"Added {name}: {what}.").classes("text-sm")
-                    for problem in info.problems:
-                        ui.label(
-                            f"Not imported: {problem}. Fix the row in your file, then pick "
-                            "the file again."
-                        ).classes("text-sm text-orange-9").mark("jobs-row-problem")
-
-            reset_jobs = file_picker(
-                native, JOB_SUFFIXES, "Jobs files", jobs, multiple=True, marker="jobs-files"
-            )
-            with ui.row().classes("items-center gap-2"):
-                ui.button(
-                    "Add a job by hand",
-                    icon="edit_note",
-                    on_click=lambda: job_form(service, pending.refresh),
-                ).props("outline no-caps").classes("bg-white").mark("add-job")
-
-                async def template() -> None:
-                    """A new copy every time, saved where the reviewer chooses (user request
-                    2026-11-11). The browser preview downloads it (the browser asks where, or
-                    uses Downloads, as its settings say)."""
-                    if not native:
-                        ui.download(service.job_template(), "jobs-template.csv")
-                        return
-                    import webview  # only in the desktop app
-
-                    window = nicegui_app.native.main_window
-                    if window is None:
-                        ui.notify("The save dialog is not available.", type="negative")
-                        return
-                    chosen = await window.create_file_dialog(
-                        webview.FileDialog.SAVE, save_filename="jobs-template.csv"
-                    )
-                    if not chosen:
-                        return
-                    dest = Path(chosen if isinstance(chosen, str) else chosen[0])
-                    if dest.suffix.lower() != ".csv":
-                        dest = dest.with_suffix(".csv")
-                    try:
-                        path = service.job_template(dest)
-                    except OSError as exc:
-                        ui.notify(f"Could not save the template: {exc}", type="negative")
-                        return
-                    ui.notify(f"Template saved: {path}", type="positive", multi_line=True)
-
-                ui.button("Get CSV template", icon="download", on_click=template).props(
-                    "flat no-caps"
-                ).mark("job-template")
-
-            @ui.refreshable
-            def pending() -> None:
-                entries = service.pending_entries()
-                if not entries:
-                    return
-                ui.label(
-                    f"Entered by hand ({len(entries)}), stored on the next Ingest or Find matches:"
-                ).classes("text-sm font-medium")
-                for e in entries:
-                    with ui.row().classes("items-center gap-1 no-wrap text-sm"):
-                        ui.icon("edit_note", size="18px").classes("text-grey-7")
-                        ui.label(" · ".join(p for p in (e.title, e.company) if p))
-
-                        def remove(name: str = e.name, title: str = e.title) -> None:
-                            def go() -> None:
-                                try:
-                                    service.remove_entry(name)
-                                except AppError as exc:
-                                    ui.notify(str(exc), type="warning")
-                                pending.refresh()
-
-                            confirm_delete(
-                                f"Remove {title}?", ["This entry is not stored yet."], go
-                            )
-
-                        ui.button(icon="close", on_click=remove).props(
-                            'flat round dense size=sm aria-label="Remove entry"'
-                        ).mark(f"remove-entry:{e.name}").tooltip("Remove this entry")
-
-            pending()
-            added.move(target_index=-1)
-
-        with ui.column().classes("w-full items-center gap-2 py-2"):
-            with ui.row().classes("items-center justify-center gap-3"):
-                # Ingest: store contractors and jobs only, to check them before matching.
-                ingest_button = (
-                    ui.button("Ingest", icon="move_to_inbox")
-                    .props("size=lg outline color=primary no-caps")
-                    .classes("bg-white")
-                    .mark("ingest")
-                    .tooltip("Store the picked contractors and jobs without matching")
-                )
-                run_button = (
-                    ui.button("Find matches", icon="search")
-                    .props("size=lg color=primary")
-                    .mark("find-matches")
-                )
-            stage = ui.label("").classes("text-sm text-grey-8")
-            bar = ui.linear_progress(value=0, show_value=False).props("rounded size=12px")
-            bar.classes("w-full sm:w-3/4 lg:w-1/2")
-            bar.set_visibility(False)
-            status = ui.label("").classes("text-sm text-center").mark("run-status")
-        log = ui.log(max_lines=400).classes("w-full h-[33vh] min-h-[200px] font-mono text-xs")
-        quota_label = ui.label().classes("text-xs text-grey-7")
-        after = ui.row()
-
-    def show_quota() -> None:
-        q = service.quota()
-        quota_label.text = f"Gemini today: {q.requests} of {q.rpd} requests, {q.tokens:,} tokens."
-
-    show_quota()
-    # The run lives in a RunJob, not in this screen: changing tab never stops it (user request
-    # 2026-11-11). This screen shows it, whenever it is open, from a timer.
-    job = run_job(service)
-    seen = {"lines": 0, "finished": job.finished, "asking": False}
-
-    def ask(check: RunCheck) -> None:
-        seen["asking"] = True
-        with page, ui.dialog().props("persistent") as dialog, ui.card():
-            ui.label("Use more of today's Gemini quota?").classes("text-h6")
-            ui.label(check.message).classes("text-sm")
-            if check.verdict == "exceeds":
-                ui.label(
-                    f"Yes sends the {check.calls_that_fit} call(s) that fit today; "
-                    "the rest wait for the next run."
-                ).classes("text-sm")
-
-            def answer(yes: bool) -> None:
-                job.answer(yes)
-                dialog.close()
-                seen["asking"] = False
-
-            with ui.row():
-                ui.button("Yes, go ahead", on_click=lambda: answer(True)).mark("quota-yes")
-                ui.button("Not now", on_click=lambda: answer(False)).props("flat").mark("quota-no")
-        dialog.open()
-
-    def finished() -> None:
-        """The run ended (seen once per run, even if it ended while on another tab)."""
-        run_button.enable()
-        ingest_button.enable()
-        bar.value = job.share
-        show_quota()
-        if job.error is not None:
-            status.text = f"Stopped: {job.error}"
-            ui.notify(job.error, type="negative", multi_line=True)
-            return
-        report = job.report
-        if report is None:
-            return
-        # The picks are stored now: clear them from the screen.
-        reset_contractors()
-        reset_jobs()
-        pending.refresh()
-        picked.set_visibility(False)
-        skipped.set_visibility(False)
-        added.clear()
-        show_count()
-        status.text = run_summary(report)
-        if not report.ingest_only:
-            after.clear()
-            with after.classes("w-full justify-center"):
-                ui.button(
-                    "See results",
-                    icon="arrow_forward",
-                    on_click=lambda: ui.navigate.to("/results"),
-                )
-
-    def update() -> None:
-        for line in job.lines[seen["lines"] :]:
-            log.push(line)
-        seen["lines"] = len(job.lines)
-        if job.running:
-            run_button.disable()
-            ingest_button.disable()
-            bar.set_visibility(True)
-            bar.value = job.share
-            stage.text = f"{job.stage} ({round(job.share * 100)}%)"
-            status.text = job.working_text()
-            if job.question is not None and not seen["asking"]:
-                ask(job.question)
-        elif job.finished != seen["finished"]:
-            seen["finished"] = job.finished
-            stage.text = f"{job.stage} ({round(job.share * 100)}%)" if job.stage else ""
-            finished()
-
-    def start(match: bool) -> None:
-        if not job.start(match):
-            ui.notify("A run is already going: it shows here.", type="warning")
-            return
-        after.clear()
-        log.clear()
-        seen["lines"] = 0
-        bar.value = 0
-        update()
-
-    if job.running or job.lines:  # a run going on, or the last one: shown again
-        if not job.running and job.report is not None:
-            status.text = run_summary(job.report)
-            bar.set_visibility(True)
-            bar.value = job.share
-        update()
-    ui.timer(0.25, update)
-    run_button.on_click(lambda: start(match=True))
-    ingest_button.on_click(lambda: start(match=False))
+def result_line(report: RunOnceReport) -> str:
+    """The progress box's last line after Find matches, shown in bold (user request
+    2026-11-18), e.g. "Successful: 3 matched, 1 no matches."."""
+    parts = [f"{report.jobs_matched} matched", f"{report.jobs_no_match} no matches"]
+    if report.jobs_not_judged:
+        parts.append(f"{report.jobs_not_judged} not checked yet")
+    head = "Stopped early" if report.stopped else "Successful"
+    return f"{head}: {', '.join(parts)}."
 
 
 def run_summary(report: RunOnceReport) -> str:
     if report.ingest_only:
         return _ingested_text(report)
     return (
-        f"Done: {report.jobs_matched} job(s) with suggestions, {report.jobs_no_match} with "
-        f"none, {report.jobs_not_judged} not judged yet."
+        f"Done: {plural(report.jobs_matched, 'job')} with suggestions, {report.jobs_no_match} "
+        f"with no match, {report.jobs_not_judged} not checked yet."
         + (f" {report.stopped}." if report.stopped else "")
     )
 
@@ -794,8 +506,11 @@ class RunJob:
     def __init__(self, service: AppService) -> None:
         self.service = service
         self.running = False
+        self.syncing = False  # the start-up check of the remembered folders is going on
         self.match = True
-        self.lines: list[str] = []
+        # The progress box: plain sentences, one per line, and whether each is bold. The
+        # technical lines go to the app's log (user request 2026-11-18).
+        self.lines: list[tuple[str, bool]] = []
         self.share = 0.0
         self.stage = ""
         self.report: RunOnceReport | None = None
@@ -804,23 +519,29 @@ class RunJob:
         self.question: RunCheck | None = None  # the budget question waiting for an answer
         self._answered = threading.Event()
         self._answer = False
+        self.track = RunTracker(service)  # "Job 2 of 5", time left, finished jobs (ui_progress)
 
     def working_text(self) -> str:
         if self.question is not None:
-            return "Waiting for your answer about today's Gemini quota."
+            return "Waiting for your answer about today's Gemini limit."
         return (
-            "Working… this can take a few minutes when there are new jobs. You can use the "
-            "other tabs meanwhile."
+            "Matching… this can take a few minutes. You can use the other tabs meanwhile."
             if self.match
-            else "Storing contractors and jobs…"
+            else "Saving your contractors and jobs…"
         )
 
     def start(self, match: bool) -> bool:
-        if self.running:
+        if self.running or self.syncing:
             return False
         self.running, self.match = True, match
         self.lines, self.share, self.stage = [], 0.0, "Starting"
         self.report, self.error, self.question = None, None, None
+        try:
+            waiting = self.service.matches_waiting() if match else 0
+        except Exception:  # noqa: BLE001 (only used to say how many matches are new)
+            logger.exception("matches_waiting_failed")
+            waiting = 0
+        self.track.reset(waiting)
         background_tasks.create(self._work(match), name="find-matches")
         return True
 
@@ -828,23 +549,32 @@ class RunJob:
         try:
             self.report = await run.io_bound(
                 self.service.run,
-                echo=self.lines.append,
+                echo=_log_run_line,
                 confirm=self._confirm,
                 progress=self._progress,
                 match=match,
+                say=self._say,
             )
+            if match:
+                self.lines.append((result_line(self.report), True))
         except RUN_ERRORS as exc:
             self.error = str(exc)
         except Exception:  # noqa: BLE001 (shown in plain words; details go to the log)
             logger.exception("run_failed")
-            self.error = "The run stopped on an unexpected error. See the app's log."
+            self.error = "Something unexpected went wrong. Details are in the app's log."
         finally:
+            if self.error is not None:
+                self._say(f"Stopped: {self.error.rstrip('.')}.")
             self.question = None
             self.running = False
             self.finished += 1
 
+    def _say(self, line: str) -> None:  # worker thread
+        self.lines.append((line, False))
+
     def _progress(self, share: float, stage: str) -> None:  # worker thread
         self.share, self.stage = share, stage
+        self.track.on_progress(share, stage)
 
     def _confirm(self, check: RunCheck) -> bool:  # worker thread: waits for the reviewer
         self._answered.clear()
@@ -858,6 +588,11 @@ class RunJob:
         self._answered.set()
 
 
+def _log_run_line(line: str) -> None:
+    """A technical run line (models, budget, tokens per call): the app's log, not the box."""
+    logger.info("run_line %s", line.strip())
+
+
 _RUN_JOBS: dict[int, RunJob] = {}
 
 
@@ -866,24 +601,67 @@ def run_job(service: AppService) -> RunJob:
     return _RUN_JOBS.setdefault(id(service), RunJob(service))
 
 
-def run_indicator(service: AppService) -> None:
-    """In the header on every tab: the run going on, and a link back to it."""
+def run_indicator(service: AppService, native: bool = False) -> None:
+    """In the header on every tab: a small "Matching 2 of 5" pill while a run goes on (it
+    takes you back to it), and, when a run ends, a message with a Review button."""
     job = run_job(service)
     chip = (
         ui.button(on_click=lambda: ui.navigate.to("/"))
         .props("flat dense no-caps color=white icon=autorenew")
+        .classes("dg-pill dg-spin")
         .mark("run-indicator")
     )
 
+    seen = {"finished": job.finished}
+
+    def ended() -> None:
+        if job.error is not None or job.report is None or job.report.ingest_only:
+            return
+        try:
+            new = max(0, service.matches_waiting() - job.track.waiting_before)
+        except Exception:  # noqa: BLE001 (the message still says it ended)
+            logger.exception("matches_waiting_failed")
+            new = 0
+        busy = busy_jobs(job.report)
+        left = job.report.jobs_not_judged
+        if new:
+            text = f"Matching finished: {plural(new, 'new match', 'new matches')}"
+            if busy:  # some jobs still wait: say why, plainly
+                text = f"{text}. {busy_text(busy)}"
+            toast(
+                text, "Review", lambda: ui.navigate.to("/review"), seconds=20 if busy else 15,
+                icon="auto_awesome", marker="run-toast",
+            )  # fmt: skip
+        else:
+            if busy:  # Google was busy: never "nothing new"
+                text = f"Matching finished. {busy_text(busy)}"
+            elif left:  # another trouble: jobs not checked, so never "nothing new"
+                text = f"Matching finished: {plural(left, 'job')} not checked yet"
+            elif job.report.stopped:
+                text = "Matching stopped early"
+            else:
+                text = "Matching finished: nothing new to review"
+            toast(
+                text if text.endswith(".") else f"{text}.", "See results",
+                lambda: ui.navigate.to("/results"), seconds=20 if busy else 12,
+                icon="auto_awesome", marker="run-toast",
+            )  # fmt: skip
+        if native:
+            notify_os("do good", text)
+
     def update() -> None:
         chip.set_visibility(job.running)
+        if job.finished != seen["finished"]:  # a run ended, on whichever tab is open
+            seen["finished"] = job.finished
+            ended()
         if job.running:
-            what = "Matching" if job.match else "Ingesting"
-            chip.text = (
-                "Answer needed on Find matches"
-                if job.question is not None
-                else f"{what}… {round(job.share * 100)}%"
-            )
+            what = "Matching" if job.match else "Saving"
+            if job.question is not None:
+                chip.text = "Answer needed on Find matches"
+            elif job.match and job.track.active:
+                chip.text = job.track.pill()
+            else:
+                chip.text = f"{what}… {round(job.share * 100)}%"
 
     update()
     ui.timer(0.5, update)
@@ -893,16 +671,16 @@ def _ingested_text(report: RunOnceReport) -> str:
     parts = []
     if report.contractors is not None:
         c = report.contractors
-        parts.append(f"{len(c.added)} contractor(s) added, {len(c.updated)} updated")
+        parts.append(f"{plural(len(c.added), 'contractor')} added, {len(c.updated)} updated")
     if report.resumes is not None:
         r = report.resumes
-        parts.append(f"{r.added + r.replaced} résumé(s) stored")
+        parts.append(f"{plural(r.added + r.replaced, 'résumé')} saved")
     new_jobs = sum(i.count("new") + i.count("needs_details") for i in report.ingest)
-    parts.append(f"{new_jobs} job(s) imported")
+    parts.append(f"{plural(new_jobs, 'job')} added")
     dropped = sum(i.count("invalid") for i in report.ingest)
     if dropped:
-        parts.append(f"{dropped} row(s) dropped (see the log)")
-    return "Ingested: " + " · ".join(parts) + ". Nothing sent to Gemini."
+        parts.append(f"{plural(dropped, 'row')} skipped (see the log)")
+    return "Saved: " + " · ".join(parts) + ". Nothing was sent to Gemini."
 
 
 # ---- screen: results ----
@@ -979,34 +757,198 @@ def _shade_button(text: str, shade: str, on_click: Callable, icon: str | None = 
     )
 
 
-def _profile_dialog(service: AppService, talent_id: str, name: str | None) -> None:
+# Profile fields edited as several lines (one item per line) or a long text.
+_LONG_TEXT = {"executive_summary"}
+
+
+FIELD_LABELS = {
+    "talent_id": "ID",
+    "talent_name": "Name",
+    "location": "Location",
+    "standardized_headline": "Headline",
+    "executive_summary": "Summary",
+    "core_strengths": "Core strengths",
+    "proof_points": "Proof points",
+    "main_industry": "Industries",
+    "search_keywords": "Search keywords",
+    "seniority": "Seniority",
+    "weekly_hours": "Hours per week",
+    "rate_expectation": "Rate expected (per hour)",
+    "target_titles": "Job titles they want",
+    "contract": "Open to contract work",
+    "primary_profession": "Main profession",
+    "secondary_professions": "Other professions",
+    "years_experience": "Years of experience",
+    "languages": "Languages",
+    "availability": "Availability",
+    "profile_updated": "Profile last updated",
+}
+
+
+def field_label(column: str) -> str:
+    """The Profile pop-up's name for a stored column (display only; the column names stay)."""
+    return FIELD_LABELS.get(column) or column.replace("_", " ").capitalize()
+
+
+def _field_kind(column: str) -> str:
+    """How the Profile pop-up edits a column: "list", "bool", "number" or "text"."""
+    annotation = ContractorProfile.model_fields[column].annotation
+    text = str(annotation)
+    if "list" in text:
+        return "list"
+    if annotation is bool:
+        return "bool"
+    if "float" in text or "int" in text:
+        return "number"
+    return "text"
+
+
+def _profile_dialog(
+    service: AppService,
+    talent_id: str,
+    name: str | None,
+    *,
+    editable: bool = False,
+    note: str | None = None,
+    on_saved: Callable[[], None] | None = None,
+) -> None:
+    """The contractor's stored profile. On the Talent screen (editable, user decisions
+    2026-11-18): Edit turns the fields into inputs, the Note can be written, and Save
+    stores both (service.save_profile). Read-only elsewhere (Results)."""
     try:
         fields = service.contractor_fields(talent_id)
     except AppError as exc:
         ui.notify(str(exc), type="warning")
         return
+    state = {"editing": False}
+    inputs: dict[str, ui.element] = {}
+
     with (
         ui.dialog() as dialog,
-        ui.card().style("width: 90vw; max-width: 90vw; max-height: 80vh"),
+        ui.card().style("width: 90vw; max-width: 90vw; max-height: 85vh"),
     ):
-        with ui.row().classes("w-full items-center justify-between"):
+        with ui.row().classes("w-full items-center justify-between no-wrap"):
             ui.label(f"Profile: {name or talent_id}").classes("text-h6")
-            ui.button(icon="close", on_click=dialog.close).props("flat round dense")
-        ui.label("From the contractor list (read-only).").classes("text-xs text-grey-7")
-        with (
-            ui.scroll_area().classes("w-full h-[65vh]"),
-            ui.grid(columns="minmax(10rem, auto) 1fr").classes("w-full gap-x-4 gap-y-1"),
-        ):
-            ui.label("Column").classes("font-bold border-b")
-            ui.label("Value").classes("font-bold border-b")
-            for column, values in fields:
-                ui.label(column).classes("font-mono text-sm text-grey-8 border-b py-1")
-                with ui.column().classes("gap-0 border-b py-1"):
-                    if not values:
-                        ui.label("—").classes("text-grey-6")
-                    for value in values:
-                        ui.label(value).classes("text-sm whitespace-pre-wrap")
+            with ui.row().classes("items-center gap-2 no-wrap"):
+                if editable:
+                    edit_button = (
+                        ui.button("Edit", icon="edit", on_click=lambda: start_editing())
+                        .props("outline dense no-caps")
+                        .classes("bg-white pl-1 pr-3")
+                        .mark("profile-edit")
+                    )
+                    save_button = (
+                        ui.button("Save", icon="save", on_click=lambda: save())
+                        .props("dense no-caps color=primary")
+                        .classes("pl-1 pr-3")
+                        .mark("profile-save")
+                    )
+                    save_button.set_visibility(False)  # a plain read view until Edit is pressed
+                ui.button(icon="close", on_click=dialog.close).props(
+                    'flat round dense aria-label="Close"'
+                ).tooltip("Close")
+        hint = ui.label("From the contractor list.").classes("text-xs text-grey-7")
+        if editable:
+            if note:  # the view shows a saved note as text; Edit turns it into the box below
+                note_text = ui.label(f"Note: {note}").classes("text-sm whitespace-pre-wrap")
+                note_text.mark("profile-note-view")
+            note_box = (
+                ui.textarea("Note", value=note or "")
+                .props("outlined stack-label autogrow bg-color=white")
+                .classes("w-full")
+                .mark("profile-note")
+            )
+            note_box.set_visibility(False)
+
+        @ui.refreshable
+        def grid() -> None:
+            with ui.grid(columns="minmax(10rem, auto) 1fr").classes("w-full gap-x-4 gap-y-1"):
+                ui.label("Field").classes("font-bold border-b")
+                ui.label("Value").classes("font-bold border-b")
+                for column, values in fields:
+                    ui.label(field_label(column)).classes(
+                        "text-sm font-medium text-grey-9 border-b py-1"
+                    ).mark(f"profile-label:{column}")
+                    with ui.column().classes("gap-0 border-b py-1"):
+                        if state["editing"] and column != "talent_id":
+                            inputs[column] = _field_input(column, values)
+                            continue
+                        if not values:
+                            ui.label("—").classes("text-grey-6")
+                        for value in values:
+                            ui.label(value).classes("text-sm whitespace-pre-wrap")
+
+        with ui.scroll_area().classes("w-full h-[60vh]"):
+            grid()
+
+    def start_editing() -> None:
+        state["editing"] = True
+        edit_button.disable()
+        save_button.set_visibility(True)
+        note_box.set_visibility(True)
+        if note:
+            note_text.set_visibility(False)
+        hint.text = (
+            "Editing. Lists take one item per line. Save checks every field. Your edit stays "
+            "until the contractor file changes this contractor; then only the fields it "
+            "changed are taken from the file."
+        )
+        grid.refresh()
+
+    def save() -> None:
+        values = {c: _field_value(c, e) for c, e in inputs.items()} if state["editing"] else {}
+        try:
+            saved = service.save_profile(talent_id, values, note_box.value)
+        except RUN_ERRORS as exc:
+            ui.notify(str(exc), type="warning", multi_line=True)
+            return
+        if not (saved.profile_changed or saved.note_changed):
+            ui.notify("Nothing changed.")
+        else:
+            ui.notify(
+                "Saved. They will be matched again on the next Find matches run."
+                if saved.rescan
+                else "Saved.",
+                type="positive",
+            )
+        dialog.close()
+        if on_saved:
+            on_saved()
+
     dialog.open()
+
+
+def _field_input(column: str, values: list[str]) -> ui.element:
+    """One editable profile field (Profile pop-up)."""
+    kind = _field_kind(column)
+    mark = f"profile-field:{column}"
+    if kind == "bool":
+        return ui.switch(value=(values or [""])[0].lower() in ("true", "1", "yes")).mark(mark)
+    if kind == "number":
+        number = float(values[0]) if values else None
+        return ui.number(value=number, min=0).props("dense outlined").classes("w-40").mark(mark)
+    if kind == "list" or column in _LONG_TEXT:
+        return (
+            ui.textarea(value="\n".join(values))
+            .props("dense outlined autogrow")
+            .classes("w-full")
+            .mark(mark)
+        )
+    return ui.input(value=(values or [""])[0]).props("dense outlined").classes("w-full").mark(mark)
+
+
+def _field_value(column: str, element: ui.element) -> object:
+    """What an edited profile field holds, for ContractorProfile."""
+    kind = _field_kind(column)
+    value = getattr(element, "value", None)
+    if kind == "bool":
+        return bool(value)
+    if kind == "number":
+        return None if value in (None, "") else value
+    text = str(value or "")
+    if kind == "list":
+        return [line.strip() for line in text.splitlines() if line.strip()]
+    return text.strip() or None
 
 
 RESUME_ROUTE = "/resume/{talent_id}"
@@ -1036,37 +978,169 @@ def _serve_resumes(service: AppService) -> None:
         )
 
 
-def resume_button(talent_id: str, name: str | None, has_resume: bool, marker: str) -> None:
-    """Opens the contractor's stored résumé (Talent and Results). Always shown; greyed out
-    when there is no résumé on file (user request). The tooltip sits on a wrapper: a
-    disabled button gets no hover events."""
+def pdf_chooser(
+    native: bool, on_pdf: Callable[[bytes], Awaitable[None] | None], marker: str
+) -> Callable[[], Awaitable[None]]:
+    """Opens a chooser for one PDF: the OS dialog in the app, the browser's file chooser
+    (a hidden upload box, made here) in the browser preview. on_pdf gets the file's bytes;
+    its name is never kept (it may hold the person's name)."""
+
+    async def deliver(data: bytes) -> None:
+        result = on_pdf(data)
+        if asyncio.iscoroutine(result):
+            await result
+
+    if native:
+
+        async def browse() -> None:
+            window = nicegui_app.native.main_window
+            if window is None:
+                ui.notify("The file dialog is not available.", type="negative")
+                return
+            picked = await window.create_file_dialog(file_types=("PDF résumé (*.pdf)",))
+            if picked:
+                await deliver(Path(picked[0]).read_bytes())
+
+        return browse
+
+    async def uploaded(e: UploadEventArguments) -> None:
+        data = await e.file.read()
+        upload.reset()  # the same file can be picked again
+        await deliver(data)
+
+    upload = (
+        ui.upload(on_upload=uploaded, auto_upload=True)
+        .props('accept=".pdf"')
+        .classes("hidden")
+        .mark(f"{marker}-upload")
+    )
+
+    async def pick() -> None:
+        upload.run_method("pickFiles")
+
+    return pick
+
+
+def resume_button(
+    talent_id: str,
+    name: str | None,
+    has_resume: bool,
+    marker: str,
+    *,
+    service: AppService | None = None,
+    native: bool = False,
+    on_change: Callable[[], None] | None = None,
+) -> None:
+    """The contractor's stored résumé (Talent and Results). Always shown, grey when there is
+    no résumé on file (user request). With `service` (Talent screen, user request
+    2026-11-18): the grey button picks a PDF and stores it, and the viewer can replace the
+    résumé. Without it (Results) a grey button is disabled. The tooltip sits on a wrapper:
+    a disabled button gets no hover events."""
+    editable = service is not None
+
+    async def add(data: bytes) -> None:
+        assert service is not None
+        try:
+            service.save_resume(talent_id, data)
+        except RUN_ERRORS as exc:
+            ui.notify(str(exc), type="warning")
+            return
+        ui.notify("Résumé added.", type="positive")
+        if on_change:
+            on_change()
+
+    def click() -> Awaitable[None] | None:
+        # Sync: the viewer dialog must be made in the click's own context.
+        if has_resume:
+            _resume_dialog(talent_id, name, service=service, native=native)
+            return None
+        return choose() if choose is not None else None
+
     with ui.element("span") as wrapper:
         button = (
-            ui.button(
-                "Résumé", icon="picture_as_pdf", on_click=lambda: _resume_dialog(talent_id, name)
-            )
+            ui.button("Résumé", icon="picture_as_pdf", on_click=click)
             .props("outline dense no-caps")
             .classes("bg-white pl-1 pr-3")
             .mark(marker)
         )
+        choose = pdf_chooser(native, add, marker) if editable and not has_resume else None
     if not has_resume:
-        button.disable()
         button.props("color=grey-7")
-        wrapper.tooltip("No résumé on file")
+        if editable:
+            wrapper.tooltip("No résumé on file: click to add one (PDF)")
+        else:
+            button.disable()
+            wrapper.tooltip("No résumé on file")
 
 
-def _resume_dialog(talent_id: str, name: str | None) -> None:
-    """The résumé in the browser's (or webview's) own PDF viewer."""
+def _resume_dialog(
+    talent_id: str, name: str | None, *, service: AppService | None = None, native: bool = False
+) -> None:
+    """The résumé in the browser's (or webview's) own PDF viewer. With `service` (Talent
+    screen): Replace résumé picks a new PDF, and only the Save that then appears replaces
+    the stored file (user request 2026-11-18); Cancel drops the pick."""
+    src = f"/resume/{quote(talent_id, safe='')}"
+    pending: dict[str, bytes] = {}
     with (
         ui.dialog() as dialog,
         ui.card().style("width: 90vw; max-width: 90vw; height: 90vh; max-height: 90vh"),
     ):
-        with ui.row().classes("w-full items-center justify-between"):
+        with ui.row().classes("w-full items-center justify-between no-wrap"):
             ui.label(f"Résumé: {name or talent_id}").classes("text-h6")
-            ui.button(icon="close", on_click=dialog.close).props("flat round dense")
-        ui.element("iframe").props(
-            f'src="/resume/{quote(talent_id, safe="")}" title="Résumé"'
-        ).classes("w-full grow border-0").mark("resume-frame")
+            with ui.row().classes("items-center gap-2 no-wrap"):
+                if service is not None:
+
+                    async def picked(data: bytes) -> None:
+                        pending["data"] = data
+                        confirm_row.set_visibility(True)
+
+                    choose = pdf_chooser(native, picked, "resume-replace")
+                    ui.button("Replace résumé", icon="upload_file", on_click=choose).props(
+                        "outline dense no-caps"
+                    ).classes("bg-white pl-1 pr-3").mark("resume-replace")
+                ui.button(icon="close", on_click=dialog.close).props(
+                    'flat round dense aria-label="Close"'
+                ).tooltip("Close")
+        with ui.row().classes(
+            "w-full items-center gap-2 px-3 py-2 rounded bg-yellow-1"
+        ) as confirm_row:
+            ui.label("New résumé picked. Save replaces the one on file (the old copy is kept).")
+            ui.button("Save", icon="save", on_click=lambda: save()).props(
+                "dense no-caps color=primary"
+            ).classes("pl-1 pr-3").mark("resume-save")
+            ui.button("Cancel", on_click=lambda: cancel()).props("flat dense no-caps").mark(
+                "resume-cancel"
+            )
+        confirm_row.set_visibility(False)
+        frame = (
+            ui.element("iframe")
+            .props(f'src="{src}" title="Résumé"')
+            .classes("w-full grow border-0")
+            .mark("resume-frame")
+        )
+
+    def cancel() -> None:
+        pending.clear()
+        confirm_row.set_visibility(False)
+
+    def save() -> None:
+        assert service is not None
+        data = pending.pop("data", None)
+        if data is None:
+            return
+        try:
+            outcome = service.save_resume(talent_id, data)
+        except RUN_ERRORS as exc:
+            ui.notify(str(exc), type="warning")
+            return
+        confirm_row.set_visibility(False)
+        if outcome == "unchanged":
+            ui.notify("That is the same file: nothing changed.")
+            return
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
+        frame.props(f'src="{src}?v={stamp}"')  # show the new file
+        ui.notify("Résumé replaced.", type="positive")
+
     dialog.open()
 
 
@@ -1108,20 +1182,57 @@ def _rejected(review: Review | None) -> bool:
     return review is not None and review.decision is Decision.REJECTED
 
 
+async def ask_reject_reason() -> tuple[ReasonCode, str] | None:
+    """Wilson's "Why reject this match?" pop-up (Results and Review mode): the reason (required)
+    and an optional note, or None when cancelled or no reason was picked."""
+    with ui.dialog() as dialog, ui.card():
+        ui.label("Why reject this match?").classes("text-h6")
+        reason = (
+            ui.select({code.value: text for code, text in REASON_TEXT.items()}, label="Reason")
+            .classes("w-64")
+            .mark("reject-reason")
+        )
+        notes = ui.input("Notes (optional)").classes("w-64")
+        with ui.row():
+            ui.button("Reject", on_click=lambda: dialog.submit(True)).props("color=negative").mark(
+                "reject-confirm"
+            )
+            ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat")
+    ok = await dialog
+    chosen = reason.value
+    note = notes.value or ""
+    dialog.delete()
+    if not ok:
+        return None
+    if not chosen:
+        ui.notify("Pick a reason for the rejection.", type="warning")
+        return None
+    return ReasonCode(chosen), note
+
+
 def _match_row(
-    service: AppService, view: MatchView, moved: Callable[[], None] | None = None
+    service: AppService,
+    view: MatchView,
+    moved: Callable[[], None] | None = None,
+    job: Job | None = None,
+    others: list[MatchView] | None = None,
+    opened: set[str] | None = None,
 ) -> None:
-    """One contractor on a Results card. `moved`: called when a decision moves them in or
-    out of "Show rejected" (a reject, or a reset or approve of a rejection), so the card
-    redraws at once (user decision 2026-11-09; Results only)."""
+    """One contractor on a Results card, as a compact row that opens on click. `moved`: called
+    when a decision moves them in or out of "Show rejected" (a reject, or a reset or approve
+    of a rejection), so the card redraws at once (user decision 2026-11-09; Results only).
+    Every decision shows an Undo toast."""
     m = view.match
     state = {"review": view.decision}
+    opened = opened if opened is not None else set()
+    who = view.name or m.talent_id
 
     def after(before: Review | None) -> None:
         if moved is not None and _rejected(before) != _rejected(state["review"]):
             moved()
             return
         judgement.refresh()
+        actions.refresh()
         paint()
 
     @ui.refreshable
@@ -1138,7 +1249,56 @@ def _match_row(
             )
             ui.button(icon="restart_alt", on_click=reset).props("flat round dense size=sm").mark(
                 "reset-decision", f"reset:{m.talent_id}"
-            ).tooltip("Reset the decision")
+            ).tooltip("Undo: back to no decision")
+
+    def open_email() -> None:
+        if job is not None:
+            ui_email.email_dialog(
+                service,
+                view,
+                job,
+                others=[o for o in (others or []) if o.match.match_id != m.match_id],
+            )
+
+    @ui.refreshable
+    def actions() -> None:
+        """The verdict buttons and "Write the email", on the collapsed row. The button of the
+        decision already made is not offered again (no second Approve beside "Approved"); the
+        others stay as the way to change it, and the tag's Undo clears it."""
+        current = state["review"].decision if state["review"] else None
+        with ui.row().classes("gap-2 flex-wrap justify-end items-center").mark("match-actions"):
+            if current is not Decision.APPROVED:
+                _shade_button(
+                    "Approve", "green", lambda: save(Decision.APPROVED), icon="check"
+                ).mark(f"approve:{m.talent_id}")
+            if current is not Decision.REJECTED:
+                _shade_button("Reject", "red", reject, icon="close").mark(f"reject:{m.talent_id}")
+            if current is not Decision.NEEDS_INFO:
+                _shade_button(
+                    "Needs info", "yellow", lambda: save(Decision.NEEDS_INFO), icon="help_outline"
+                ).mark(f"needs-info:{m.talent_id}")
+            if job is not None:
+                ui.button("Write the email", icon="mail_outline", on_click=open_email).props(
+                    "dense no-caps "
+                    + ("unelevated color=primary" if current is Decision.APPROVED else "outline")
+                ).classes("px-3").mark(f"email:{m.talent_id}")
+
+    def restore(before: Review | None) -> None:
+        """Undo: put the decision back as it was (a new row in reviews.csv; nothing is erased)."""
+        try:
+            if before is None:
+                service.clear_decision(m.match_id)
+            else:
+                service.decide(m.match_id, before.decision, before.reason_code, before.notes)
+        except (AppError, CsvStoreError) as exc:
+            ui.notify(str(exc), type="negative")
+            return
+        if moved is not None:
+            moved()  # the card is redrawn from the saved decisions
+            return
+        current = state["review"]
+        state["review"] = before
+        after(current)
 
     def save(decision: Decision, reason: ReasonCode | None = None, notes: str = "") -> None:
         before = state["review"]
@@ -1148,6 +1308,7 @@ def _match_row(
             ui.notify(str(exc), type="negative")
             return
         after(before)
+        undo_toast(f"{DECISION_TEXT[decision][0]}: {who}.", lambda: restore(before))
 
     def reset() -> None:
         before = state["review"]
@@ -1158,33 +1319,23 @@ def _match_row(
             return
         state["review"] = None
         after(before)
+        undo_toast(f"Decision cleared for {who}.", lambda: restore(before))
 
     async def reject() -> None:
-        with ui.dialog() as dialog, ui.card():
-            ui.label("Why reject this match?").classes("text-h6")
-            reason = (
-                ui.select({code.value: text for code, text in REASON_TEXT.items()}, label="Reason")
-                .classes("w-64")
-                .mark("reject-reason")
-            )
-            notes = ui.input("Notes (optional)").classes("w-64")
-            with ui.row():
-                ui.button("Reject", on_click=lambda: dialog.submit(True)).props(
-                    "color=negative"
-                ).mark("reject-confirm")
-                ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat")
-        ok = await dialog
-        chosen = reason.value
-        note = notes.value or ""
-        dialog.delete()
-        if ok:
-            if not chosen:
-                ui.notify("Pick a reason for the rejection.", type="warning")
-                return
-            save(Decision.REJECTED, ReasonCode(chosen), note)
+        picked = await ask_reject_reason()
+        if picked is not None:
+            save(Decision.REJECTED, *picked)
+
+    def toggled(e: ValueChangeEventArguments) -> None:
+        (opened.add if e.value else opened.discard)(m.match_id)
+        if e.value:
+            reason_label.classes(remove="dg-clamp2")
+        else:
+            reason_label.classes(add="dg-clamp2")
 
     fit = m.verdict.value == "fit"
-    box = ui.column().classes("w-full gap-2 rounded-xl border border-grey-4 p-3")
+    box = ui.row().classes("w-full items-start justify-between no-wrap gap-3 dg-compact")
+    box.classes("rounded-xl border border-grey-4 px-3 py-1")
     box.mark("contractor-box")
 
     def paint() -> None:
@@ -1198,34 +1349,43 @@ def _match_row(
             box.style(replace=f"border-left: 4px solid {colour}; padding-left: 0.75rem;")
 
     paint()
+    collector = " · ".join(
+        t for t in (getattr(job, "why_kept", None), getattr(job, "fits_roles", None)) if t
+    )
     with box:
-        # min-h fits the decision tag and the Reset button, so they appear without moving
-        # the contractor's details down.
-        with ui.row().classes("w-full items-center justify-between no-wrap min-h-[2.25rem]"):
-            with ui.row().classes("items-center gap-2 flex-1 min-w-0"):
-                ui.label(view.name or m.talent_id).classes("font-bold")
-                if view.headline:
-                    ui.label(view.headline).classes("text-grey-8")
-                # Only the verdict chip is coloured (by score band); the score is plain text.
-                chip_fill = score_shade(service, m.fit_score, fit)
-                ui.label("fit" if fit else "partial").classes(
-                    "text-xs px-2 rounded-full font-semibold"
-                ).style(
-                    f"background-color: {chip_fill}; color: {TEXT_DARK}; "
-                    f"border: 1.5px solid {EDGE_BY_FILL.get(chip_fill, SHADE_EDGE['green'])};"
-                ).mark("verdict-chip")
-                if m.fit_score is not None:
-                    ui.label(f"· score {m.fit_score}").classes("text-xs text-grey-8")
-                if not m.detailed:
-                    ui.label("reason only").classes("text-xs text-grey-7 italic")
-                if view.unavailable:
-                    ui.label("Not available for new projects").classes(
-                        "text-xs px-2 rounded bg-grey-3 text-grey-9"
-                    ).mark("unavailable-tag")
-            judgement()
-        if m.reason:
-            ui.label(m.reason).classes("text-sm")
-        with ui.expansion("Details").classes("w-full text-sm"):
+        with (
+            ui.expansion(value=m.match_id in opened, on_value_change=toggled)
+            .props("dense")
+            .classes("flex-1 min-w-0 text-sm") as row
+        ):
+            with row.add_slot("header"), ui.column().classes("gap-0 w-full min-w-0 py-1"):
+                with ui.row().classes("items-center gap-2").mark("match-head"):
+                    ui.label(who).classes("font-bold")
+                    if view.headline:
+                        ui.label(view.headline).classes("text-grey-8")
+                    # Only the verdict chip is coloured (by score band); the score is plain text.
+                    chip_fill = score_shade(service, m.fit_score, fit)
+                    ui.label("fit" if fit else "partial").classes(
+                        "text-xs px-2 rounded-full font-semibold"
+                    ).style(
+                        f"background-color: {chip_fill}; color: {TEXT_DARK}; "
+                        f"border: 1.5px solid {EDGE_BY_FILL.get(chip_fill, SHADE_EDGE['green'])};"
+                    ).mark("verdict-chip")
+                    if m.fit_score is not None:
+                        ui.label(f"· score {m.fit_score}").classes("text-xs text-grey-8")
+                    if not m.detailed:
+                        ui.label("reason only").classes("text-xs text-grey-7 italic")
+                    if view.unavailable:
+                        ui.label("Not available for new projects").classes(
+                            "text-xs px-2 rounded bg-grey-3 text-grey-9"
+                        ).mark("unavailable-tag")
+                reason_label = ui.label(m.reason or "").classes(
+                    "text-sm" + ("" if m.match_id in opened else " dg-clamp2")
+                )
+                if collector:
+                    ui.label(f"From the job collector: {collector}").classes(
+                        "text-xs text-grey-7 dg-clamp2"
+                    ).mark("collector-note")
             with ui.row().classes("gap-2 pb-2"):
                 ui.button(
                     "Profile",
@@ -1253,16 +1413,22 @@ def _match_row(
                     "Gemini judged this contractor without describing them: only the reason "
                     "above is known."
                 ).classes("text-grey-7")
-        with ui.row().classes("gap-2 flex-wrap"):
-            _shade_button("Approve", "green", lambda: save(Decision.APPROVED), icon="check")
-            _shade_button("Reject", "red", reject, icon="close").mark(f"reject:{m.talent_id}")
-            _shade_button(
-                "Needs info", "yellow", lambda: save(Decision.NEEDS_INFO), icon="help_outline"
-            )
+        with ui.column().classes("items-end gap-1 shrink-0 pt-1"):
+            judgement()
+            actions()
 
 
 def _open_url(url: str) -> Callable[[], None]:
-    return lambda: ui.navigate.to(url, new_tab=True)
+    """Opens a web link in a new tab; anything that is not http(s) (javascript:, file:) is not."""
+
+    def open_it() -> None:
+        link = web_url_or_none(url)
+        if link is None:
+            ui.notify("That link is not a web address, so it was not opened.", type="warning")
+            return
+        ui.navigate.to(link, new_tab=True)
+
+    return open_it
 
 
 # ---- contact email and links between Jobs and Results (TODO 1 and 2, 2026-11-10) ----
@@ -1300,25 +1466,45 @@ def job_title(job: Job, classes: str = "") -> None:
 
 
 def contact_line(job: Job) -> None:
-    """The posting's HR contact email with a copy button, or a note that there is none.
-    Shown and copied only: the app never sends email."""
-    with ui.row().classes("items-center gap-1 no-wrap text-sm").mark("contact-email"):
-        ui.icon("mail_outline", size="16px").classes("text-grey-7")
-        if job.contact_person:
-            ui.label(job.contact_person).classes("font-medium").mark("contact-person")
-        if not job.contact_email:
-            ui.label("No contact email in the posting").classes("text-grey-7")
-            return
-        ui.label(job.contact_email).classes("select-all")
-        email = job.contact_email
+    """The posting's contact details (name, email, phone, apply link) with copy buttons, or a
+    note that there is no email. Shown and copied only: the app never sends email."""
+    with ui.row().classes("items-center gap-x-3 gap-y-0 text-sm").mark("contact-email"):
+        with ui.row().classes("items-center gap-1 no-wrap"):
+            ui.icon("mail_outline", size="16px").classes("text-grey-7")
+            if job.contact_person:
+                ui.label(job.contact_person).classes("font-medium").mark("contact-person")
+            if not job.contact_email:
+                ui.label("No contact email in the posting").classes("text-grey-7")
+            else:
+                ui.label(job.contact_email).classes("select-all")
+                _copy_button(
+                    job.contact_email, "Email copied.", "Copy email", f"copy-email:{job.job_id}"
+                )
+        phone = getattr(job, "contact_phone", None)
+        if phone:
+            with ui.row().classes("items-center gap-1 no-wrap").mark("contact-phone"):
+                ui.icon("call", size="16px").classes("text-grey-7")
+                ui.label(phone).classes("select-all")
+                _copy_button(
+                    phone, "Phone number copied.", "Copy phone", f"copy-phone:{job.job_id}"
+                )
+        apply_url = getattr(job, "apply_url", None)
+        if apply_url:
+            ui.button("Apply link", icon="open_in_new", on_click=_open_url(apply_url)).props(
+                "flat dense no-caps size=sm"
+            ).mark(f"apply-link:{job.job_id}")
 
-        def copy() -> None:
-            ui.clipboard.write(email)
-            ui.notify("Email copied.", type="positive")
 
-        ui.button(icon="content_copy", on_click=copy).props(
-            'flat round dense size=sm aria-label="Copy email"'
-        ).mark(f"copy-email:{job.job_id}").tooltip("Copy email")
+def _copy_button(value: str, done: str, tip: str, marker: str) -> None:
+    async def copy() -> None:
+        if await ui_email.copy_to_clipboard(value):
+            ui.notify(done, type="positive")
+        else:
+            ui.notify(ui_email.COPY_FAILED, type="warning")
+
+    ui.button(icon="content_copy", on_click=copy).props(
+        f'flat round dense size=sm aria-label="{tip}"'
+    ).mark(marker).tooltip(tip)
 
 
 def anchor(page: str, job_id: str) -> str:
@@ -1364,15 +1550,42 @@ def _chip(text: str, icon: str, shade: str | None = None) -> None:
     ).style(f"{style} color: {TEXT_DARK};")
 
 
-def _job_card(service: AppService, result: JobResult) -> None:
+RESULTS_VIEW_KEY = "results_view"  # app.storage.client: "approved" = the next Results shows them
+
+
+def go_to_approved() -> None:
+    """Open Results showing only the people approved so far (the Home tile)."""
+    nicegui_app.storage.client[RESULTS_VIEW_KEY] = "approved"
+    ui.navigate.to("/results")
+
+
+def approved_only(result: JobResult) -> JobResult | None:
+    """The job with only its approved people; None when nobody is approved for it."""
+    mine = [
+        m
+        for m in result.matches
+        if m.decision is not None and m.decision.decision is Decision.APPROVED
+    ]
+    return result.model_copy(update={"matches": mine, "rejected": []}) if mine else None
+
+
+def _job_card(
+    service: AppService,
+    result: JobResult,
+    keep: Callable[[JobResult], JobResult | None] | None = None,
+) -> None:
     """One job on Results. Redraws itself when a reject or a reset moves someone in or out
-    of "Show rejected" (that section stays open if it was)."""
+    of "Show rejected" (that section stays open if it was). `keep`: the view in force (only
+    approved people), applied again after every redraw."""
     state = {"result": result, "open": False}
+    rows: set[str] = set()  # matches shown open (kept when the card is redrawn)
 
     def moved() -> None:
         fresh = service.job_result(result.job.job_id)
         if fresh is not None:
-            state["result"] = fresh
+            state["result"] = (keep(fresh) if keep else fresh) or fresh.model_copy(
+                update={"matches": [], "rejected": []}
+            )
         card.refresh()
 
     def remember(e: ValueChangeEventArguments) -> None:
@@ -1380,7 +1593,7 @@ def _job_card(service: AppService, result: JobResult) -> None:
 
     @ui.refreshable
     def card() -> None:
-        _job_card_body(service, state["result"], moved, bool(state["open"]), remember)
+        _job_card_body(service, state["result"], moved, bool(state["open"]), remember, rows)
 
     card()
 
@@ -1391,6 +1604,7 @@ def _job_card_body(
     moved: Callable[[], None],
     rejected_open: bool,
     remember: Callable[[ValueChangeEventArguments], None],
+    rows: set[str] | None = None,
 ) -> None:
     job = result.job
     text, _ = OUTCOME_TEXT[result.outcome]
@@ -1434,7 +1648,7 @@ def _job_card_body(
         if result.matches:
             with ui.column().classes("w-full gap-3 p-4"):
                 for view in result.matches:
-                    _match_row(service, view, moved)
+                    _match_row(service, view, moved, job, result.matches, rows)
         if result.rejected:
             # The reviewer's rejections: hidden, still holding their slot in the round, and
             # brought back with Reset (user decision 2026-11-09: rejections are often
@@ -1451,39 +1665,73 @@ def _job_card_body(
                 ui.column().classes("w-full gap-3 py-2"),
             ):
                 for view in result.rejected:
-                    _match_row(service, view, moved)
+                    _match_row(service, view, moved, job, result.matches, rows)
+
+
+async def export_to_excel(service: AppService, native: bool) -> None:
+    """The Export to Excel button (Results and the end of Review mode)."""
+    try:
+        done = await run.io_bound(service.export)
+    except RUN_ERRORS as exc:
+        ui.notify(str(exc), type="negative")
+        return
+    if done is None:
+        return
+    ui.notify(f"Saved {done.path.name} ({done.rows} rows). It holds names: keep it local.")
+    if native:
+        open_in_file_manager(done.path)
+    else:
+        ui.download.file(done.path)
 
 
 def results_page(service: AppService, native: bool) -> None:
     results = service.results()
+    only_approved = nicegui_app.storage.client.pop(RESULTS_VIEW_KEY, None) == "approved"
     counts = {k: sum(r.outcome == k for r in results) for k in OUTCOME_TEXT}
+    undecided = sum(m.decision is None for r in results for m in r.matches)
+    if only_approved:
+        results = [kept for r in results if (kept := approved_only(r)) is not None]
     with ui.column().classes(f"{PAGE} gap-3"):
-        ui.label("Results").classes("text-h5")
-        ui.label(
-            f"{counts['fits']} job(s) with clear fits · {counts['check_partial']} to check by "
-            f"hand · {counts['no_match']} with no match · {counts['not_judged']} not judged yet"
-        ).classes("text-sm text-grey-8")
+        with ui.row().classes("w-full items-center justify-between"):
+            ui.label("Results").classes("text-h5")
+            if undecided and not only_approved:
+                ui.button(
+                    f"Review {plural(undecided, 'match', 'matches')} one by one",
+                    icon="playlist_add_check",
+                    on_click=_go("/review"),
+                ).props("unelevated no-caps color=primary").classes("dg-main-sm").mark(
+                    "review-matches"
+                )
+        if only_approved:
+            people = sum(len(r.matches) for r in results)
+            with ui.row().classes("w-full items-center gap-3").mark("results-approved-view"):
+                ui.label(
+                    f"Showing only approved people: {plural(people, 'person', 'people')} on "
+                    f"{plural(len(results), 'job')}"
+                ).classes("text-sm text-grey-8")
+                ui.button("Show everything", icon="visibility", on_click=_go("/results")).props(
+                    "flat dense no-caps color=primary"
+                ).mark("results-show-all")
+        else:
+            ui.label(
+                f"{plural(counts['fits'], 'job')} with clear fits · {counts['check_partial']} to "
+                f"check by hand · {counts['no_match']} with no match · {counts['not_judged']} not "
+                "checked yet"
+            ).classes("text-sm text-grey-8")
         if not results:
-            ui.label("No jobs yet. Add a jobs file and click Find matches.")
+            ui.label(
+                "Nobody is approved yet. Review your matches on Home."
+                if only_approved
+                else "No jobs yet. Add a jobs file on Home and click Find matches."
+            )
         for result in results:
-            _job_card(service, result)
+            _job_card(service, result, approved_only if only_approved else None)
         focus = take_focus("results")
         if focus:
             scroll_to_card("results", focus)
 
         async def export() -> None:
-            try:
-                done = await run.io_bound(service.export)
-            except RUN_ERRORS as exc:
-                ui.notify(str(exc), type="negative")
-                return
-            if done is None:
-                return
-            ui.notify(f"Saved {done.path.name} ({done.rows} rows). It holds names: keep it local.")
-            if native:
-                open_in_file_manager(done.path)
-            else:
-                ui.download.file(done.path)
+            await export_to_excel(service, native)
 
         with ui.row().classes("w-full justify-between py-4"):
             ui.button("Export to Excel", icon="download", on_click=export).props("outline")
@@ -1503,9 +1751,9 @@ JOB_STATE_STYLE: dict[JobState, tuple[str, str]] = {
     "inactive": ("#F1EFF5", "#B9B2C9"),
 }
 JOB_STATE_TEXT: dict[JobState, str] = {
-    "matched": "Scanned",
-    "no_match": "Scanned",
-    "waiting": "Not scanned yet",
+    "matched": "Checked",
+    "no_match": "Checked",
+    "waiting": "Not checked yet",
     "inactive": "Closed",
 }
 
@@ -1525,19 +1773,22 @@ def _candidates_table(service: AppService, item: JobOverview, refresh: Callable[
     dropdown with Save; a rejected or ghosted application is greyed with Undo."""
     job_id = item.job.job_id
     if not item.candidates:
-        ui.label("No approved candidates yet. Approve them on Results.").classes(
-            "text-sm text-grey-7"
-        )
+        ui.label("Nobody approved yet. Approve people on Results.").classes("text-sm text-grey-7")
         return
 
-    def run_action(action: Callable[[], object], done: str) -> None:
+    def run_action(
+        action: Callable[[], object], done: str, undo: Callable[[], object] | None = None
+    ) -> None:
         try:
             action()
         except RUN_ERRORS as exc:
             ui.notify(str(exc), type="warning")
             return
-        ui.notify(done, type="positive")
         refresh()
+        if undo is None:
+            ui.notify(done, type="positive")
+        else:
+            undo_toast(done, lambda: run_action(undo, "Undone."))
 
     with ui.element("div").classes(
         "w-full grid grid-cols-[minmax(8rem,1fr)_minmax(8rem,2fr)_auto_minmax(13rem,auto)_auto] "
@@ -1573,14 +1824,21 @@ def _candidates_table(service: AppService, item: JobOverview, refresh: Callable[
                 .mark(f"status:{key}")
             )
 
-            def save(t: str = c.talent_id, box: ui.select = choice) -> None:
+            def save(
+                t: str = c.talent_id, box: ui.select = choice, prev: ApplicationStatus = c.status
+            ) -> None:
                 status = ApplicationStatus(box.value)
                 note = (
-                    "Saved. The job is marked completed and the contractor not available."
+                    "Saved. The job is marked completed."
                     if status is ApplicationStatus.HIRED
                     else "Saved."
                 )
-                run_action(lambda: service.set_application(job_id, t, status), note)
+                undo = None  # a hire changes other things (the job closes): no one-click undo
+                if status is ApplicationStatus.REJECTED:
+                    undo = lambda: service.undo_application_rejection(job_id, t)  # noqa: E731
+                elif ApplicationStatus.HIRED not in (status, prev):
+                    undo = lambda: service.set_application(job_id, t, prev)  # noqa: E731
+                run_action(lambda: service.set_application(job_id, t, status), note, undo)
 
             ui.button("Save", icon="save", on_click=save).props("outline dense no-caps").classes(
                 "bg-white"
@@ -1624,21 +1882,64 @@ def danger_button(text: str, on_click: Callable[[], None], marker: str) -> ui.bu
     return button.mark(marker)
 
 
+def job_status(item: JobOverview) -> tuple[str, str]:
+    """The Jobs row's state line and, apart from it, what is still to check. A job that has
+    matches AND new people not checked yet says both: "Checked · 2 matches · best score 98" and
+    "3 new people not checked yet" (the matches stay valid). Otherwise the usual wording."""
+    if item.state == "waiting" and item.summary:
+        news = (
+            f"{plural(item.new_people, 'new person', 'new people')} not checked yet"
+            if item.new_people
+            else "Not checked yet"
+        )
+        return f"Checked · {item.summary}", news
+    line = JOB_STATE_TEXT[item.state]
+    return (f"{line} · {item.summary}" if item.summary else line), ""
+
+
 def _jobs_card(
-    service: AppService, item: JobOverview, refresh: Callable[[], None], opened: set[str]
+    service: AppService,
+    item: JobOverview,
+    refresh: Callable[[], None],
+    opened: set[str],
+    new: bool = False,
 ) -> None:
+    """One job as a compact row (title, place, state line); click it to see the contact,
+    the terms and the approved candidates. The buttons stay on the right."""
     job = item.job
     background, border = JOB_STATE_STYLE[item.state]
     grey = item.state == "inactive"
+    title = title_case(job.title_norm or job.title_raw)
 
-    def act(action: JobAction) -> Callable[[], None]:
-        def handler() -> None:
+    def change(action: JobAction, text: str, undo_action: JobAction | None) -> None:
+        try:
+            service.set_job_availability(job.job_id, action)
+        except RUN_ERRORS as exc:
+            ui.notify(str(exc), type="warning")
+            return
+        refresh()
+        if undo_action is None:
+            return
+
+        def undo() -> None:
             try:
-                service.set_job_availability(job.job_id, action)
+                service.set_job_availability(job.job_id, undo_action)
             except RUN_ERRORS as exc:
                 ui.notify(str(exc), type="warning")
                 return
             refresh()
+
+        undo_toast(f"{text}: {title}.", undo)
+
+    def act(action: JobAction) -> Callable[[], None]:
+        def handler() -> None:
+            if action == "unavailable":
+                change(action, "Marked unavailable", "reopen")
+            elif action == "reopen":
+                was_unavailable = job.availability is JobAvailability.UNAVAILABLE
+                change(action, "Reopened", "unavailable" if was_unavailable else None)
+            else:
+                change(action, "Saved", None)
 
         return handler
 
@@ -1646,8 +1947,6 @@ def _jobs_card(
         (opened.add if e.value else opened.discard)(job.job_id)
 
     def delete() -> None:
-        title = title_case(job.title_norm or job.title_raw)
-
         def go() -> None:
             try:
                 kept = service.delete_job(job.job_id)
@@ -1656,7 +1955,7 @@ def _jobs_card(
                 return
             ui.notify(
                 f"Deleted {title}."
-                + (f" Still listed for {kept} contractor(s) on Talent." if kept else ""),
+                + (f" Still listed for {plural(kept, 'contractor')} on Talent." if kept else ""),
                 type="positive",
             )
             refresh()
@@ -1664,9 +1963,9 @@ def _jobs_card(
         confirm_delete(
             f"Delete {title}?",
             [
-                "The job leaves the app: Jobs, Results and future matching. Its scans, rounds, "
+                "The job leaves the app: Jobs, Results and future matching. Its checks, rounds, "
                 "application statuses and Gemini's results are deleted.",
-                "Imported again later, it is sent to Gemini afresh.",
+                "Added again later, it is sent to Gemini afresh.",
                 "A contractor hired for it still sees it on the Talent screen.",
             ],
             go,
@@ -1675,62 +1974,65 @@ def _jobs_card(
     card = (
         ui.card()
         .props(f'flat id="{anchor("jobs", job.job_id)}"')
-        .classes("w-full px-4 py-3 gap-1 rounded-2xl")
+        .classes("w-full px-3 py-1 gap-1 rounded-2xl dg-row")
     )
     card.style(f"background-color: {background}; border: 2px solid {border};")
     card.mark("job-card", f"job-state-{item.state}")
-    with card:
-        _jobs_card_head(item, act, grey)
-        active = [c for c in item.candidates if not c.removed]
-        with ui.row().classes("w-full items-start no-wrap gap-2"):
+    active = [c for c in item.candidates if not c.removed]
+    with card, ui.row().classes("w-full items-start no-wrap gap-3"):
+        with (
+            ui.expansion(value=job.job_id in opened, on_value_change=remember)
+            .props("dense")
+            .classes("flex-1 min-w-0 text-sm")
+            .mark(f"candidates:{job.job_id}") as row
+        ):
             with (
-                ui.expansion(
-                    f"Approved candidates ({len(active)})",
-                    icon="groups",
-                    value=job.job_id in opened,
-                    on_value_change=remember,
-                )
-                .props("dense")
-                .classes("flex-1 min-w-0 text-sm")
-                .mark(f"candidates:{job.job_id}")
+                row.add_slot("header"),
+                ui.column().classes("gap-0 w-full min-w-0 py-1" + (" opacity-60" if grey else "")),
             ):
+                with ui.row().classes("items-center gap-2"):
+                    job_title(job)
+                    if new:
+                        ui.label("New").classes("dg-new-tag").mark("new-tag")
+                where = " · ".join(p for p in (job.company_raw, job.location_raw) if p)
+                terms = " · ".join(
+                    p
+                    for p in (
+                        WORK_MODE_TEXT.get(job.remote_type),
+                        f"{job.hours_per_week:g} h/week" if job.hours_per_week else None,
+                        pay_text(job),
+                    )
+                    if p
+                )
+                if where or terms:
+                    ui.label(" · ".join(p for p in (where, terms) if p)).classes(
+                        "text-sm text-grey-8"
+                    )
+                line, news = job_status(item)
+                with ui.row().classes("items-center gap-3"):
+                    ui.label(line).classes("text-sm font-medium").mark("job-summary")
+                    if news:
+                        ui.label(news).classes("text-xs px-2 rounded-full font-medium").style(
+                            shade_style("yellow") + f" color: {TEXT_DARK};"
+                        ).mark("job-new-people")
+                    if active:
+                        ui.label(f"{len(active)} approved").classes(
+                            "text-xs px-2 rounded-full bg-white"
+                        ).style(f"border: 1.5px solid {border};")
+            with ui.column().classes("w-full gap-2 pt-1" + (" opacity-60" if grey else "")):
+                contact_line(job)
+                why = " · ".join(
+                    t
+                    for t in (getattr(job, "why_kept", None), getattr(job, "fits_roles", None))
+                    if t
+                )
+                if why:
+                    ui.label(f"From the job collector: {why}").classes("text-xs text-grey-7").mark(
+                        "collector-note"
+                    )
+                ui.label(f"Approved candidates ({len(active)})").classes("font-bold text-sm")
                 _candidates_table(service, item, refresh)
-            # Away from Reopen (user request): the card's bottom-right corner, icon only.
-            if grey:
-                danger_button("", delete, f"delete-job:{job.job_id}").tooltip(
-                    "Delete this closed job from the app"
-                )
-
-
-def _jobs_card_head(
-    item: JobOverview,
-    act: Callable[[JobAction], Callable[[], None]],
-    grey: bool,
-) -> None:
-    job = item.job
-    with ui.row().classes("w-full items-start justify-between no-wrap gap-3"):
-        with ui.column().classes("flex-1 min-w-0 gap-0" + (" opacity-60" if grey else "")):
-            job_title(job)
-            where = " · ".join(p for p in (job.company_raw, job.location_raw) if p)
-            if where:
-                ui.label(where).classes("text-sm text-grey-8")
-            terms = " · ".join(
-                p
-                for p in (
-                    WORK_MODE_TEXT.get(job.remote_type),
-                    f"{job.hours_per_week:g} h/week" if job.hours_per_week else None,
-                    pay_text(job),
-                )
-                if p
-            )
-            if terms:
-                ui.label(terms).classes("text-sm text-grey-8")
-            contact_line(job)
-            line = JOB_STATE_TEXT[item.state]
-            if item.summary:
-                line += f" · {item.summary}"
-            ui.label(line).classes("text-sm font-medium pt-1").mark("job-summary")
-        with ui.row().classes("items-center gap-2 no-wrap"):
+        with ui.row().classes("items-center gap-2 no-wrap shrink-0 pt-1"):
             if not grey:  # closed jobs are not on Results
                 ui.button(
                     "See on Results",
@@ -1742,21 +2044,22 @@ def _jobs_card_head(
             ui.button(icon="open_in_new", on_click=_open_url(job.url)).props(
                 'outline round dense aria-label="Open posting"'
             ).classes("bg-white").tooltip("Open posting")
-            toggles: list[tuple[str, str, JobAction, str]]
             if grey:
-                toggles = [("Reopen", "replay", "reopen", "Available again for matching")]
+                text, icon, action, tip = (
+                    "Reopen", "replay", "reopen", "Available again for matching"
+                )  # fmt: skip
             else:
                 # No Completed button (user request 2026-11-10): a job is completed when an
                 # application is set to Hired.
-                toggles = [
-                    ("Unavailable", "block", "unavailable", "The posting expired or is not valid"),
-                ]
-            for text, icon, action, tip in toggles:
-                # Icon and text centred; extra room after the text (user request 2026-11-09).
-                ui.button(text, icon=icon, on_click=act(action)).props(
-                    "outline dense no-caps align=center"
-                ).classes("bg-white items-center pl-1 pr-3").mark(f"{action}:{job.job_id}").tooltip(
-                    tip
+                text, icon, action, tip = (
+                    "Unavailable", "block", "unavailable", "The posting expired or is not valid"
+                )  # fmt: skip
+            ui.button(text, icon=icon, on_click=act(action)).props(
+                "outline dense no-caps align=center"
+            ).classes("bg-white items-center pl-1 pr-3").mark(f"{action}:{job.job_id}").tooltip(tip)
+            if grey:
+                danger_button("", delete, f"delete-job:{job.job_id}").tooltip(
+                    "Delete this closed job from the app"
                 )
 
 
@@ -1801,6 +2104,8 @@ def jobs_page(service: AppService, native: bool) -> None:
     shown: list[str] = []  # job IDs in on-screen order, fixed when the page opens
     opened: set[str] = set()  # cards whose candidates table is open (kept across repaints)
     query = {"text": "", "filter": "all"}
+    new_jobs = service.new_items().jobs  # what arrived since this screen was last opened
+    service.mark_seen("jobs")
     focus = take_focus("jobs")  # opened from a Results card: its candidates table open
     if focus:
         opened.add(focus)
@@ -1811,11 +2116,18 @@ def jobs_page(service: AppService, native: bool) -> None:
         shown[:] = [o.job.job_id for o in jobs]
         counts = {s: sum(j.state == s for j in jobs) for s in JOB_STATE_STYLE}
         scanned = counts["matched"] + counts["no_match"]
-        ui.label(
-            f"{len(jobs)} job(s) · {scanned} scanned ({counts['matched']} with matches, "
-            f"{counts['no_match']} with no match) · {counts['waiting']} not scanned yet · "
-            f"{counts['inactive']} closed"
-        ).classes("text-sm text-grey-8")
+        left_out = service.jobs_left_out()
+        with ui.row().classes("items-center gap-2"):
+            ui.label(
+                f"{plural(len(jobs), 'job')} · {scanned} checked ({counts['matched']} with "
+                f"matches, {counts['no_match']} with no match) · {counts['waiting']} not checked "
+                f"yet · {counts['inactive']} closed"
+            ).classes("text-sm text-grey-8")
+            if left_out:
+                ui.button(
+                    f"{plural(len(left_out), 'job')} left out: see why",
+                    on_click=lambda: left_out_dialog(left_out),
+                ).props("flat dense no-caps color=primary").classes("px-1").mark("jobs-left-out")
         words = query["text"].split()
         matching = [
             o
@@ -1823,11 +2135,11 @@ def jobs_page(service: AppService, native: bool) -> None:
             if job_matches_search(o.job, words) and job_in_filter(o, query["filter"])
         ]
         if not jobs:
-            ui.label("No jobs yet. Add a jobs file and click Find matches.")
+            ui.label("No jobs yet. Add a jobs file on Home and click Find matches.")
         elif not matching:
             ui.label("No job matches the search.").classes("text-grey-7")
         for item in matching:
-            _jobs_card(service, item, body.refresh, opened)
+            _jobs_card(service, item, body.refresh, opened, item.job.job_id in new_jobs)
 
     def search(e: ValueChangeEventArguments) -> None:
         query["text"] = e.value or ""
@@ -1840,12 +2152,14 @@ def jobs_page(service: AppService, native: bool) -> None:
         body.refresh()
 
     with ui.column().classes(f"{PAGE} gap-3"):
-        ui.label("Jobs").classes("text-h5")
-        ui.label(
-            "A job is completed when an approved candidate is set to Hired; mark it "
-            "Unavailable to stop matching it. Reopen puts it back; the next Find matches sends "
-            "only contractors not yet judged for it. A closed job can be deleted."
-        ).classes("text-xs text-grey-7")
+        with ui.row().classes("items-center gap-1"):
+            ui.label("Jobs").classes("text-h5")
+            help_icon(
+                "A job is completed when an approved candidate is set to Hired. Mark a job "
+                "Unavailable to stop matching it. Reopen puts it back, and the next Find "
+                "matches only checks people not yet checked for it. A closed job can be "
+                "deleted."
+            )
         with ui.row().classes("w-full items-center gap-3"):
             ui.input(placeholder="Search by job title or company", on_change=search).props(
                 "dense outlined clearable bg-color=white"
@@ -1899,22 +2213,104 @@ def _talent_jobs_table(item: TalentOverview) -> None:
             )
 
 
+def _day(d: date) -> str:
+    return f"{d:%b} {d.day}, {d.year}"
+
+
+def free_chip(item: TalentOverview) -> tuple[str, str]:
+    """The real-world availability chip (from the profile's own words), whether or not the
+    contractor is included in matching: "Available now" (green), "Available from Dec 2, 2026"
+    (blue), "Booked until Mar 18, 2027" (orange); any other wording is shown as written."""
+    if item.free_state == "now":
+        return "Available now", "bg-green-2 text-green-10"
+    if item.free_state == "later" and item.free_date:
+        return f"Available from {_day(item.free_date)}", "bg-blue-1 text-blue-10"
+    if item.free_state == "booked":
+        until = f" until {_day(item.free_date)}" if item.free_date else ""
+        return f"Booked{until}", "bg-orange-2 text-orange-10"
+    return plain_dates_in(str(item.availability)), "bg-blue-1 text-blue-10"
+
+
+TALENT_FILTERS = {
+    "all": "Everyone",
+    "now": "Available now",
+    "later": "Booked or free later",
+    "left_out": "Left out of matching",
+}
+TALENT_SORTS = {"name": "Name (A–Z)", "updated": "Recently updated"}
+
+
+def talent_group(item: TalentOverview) -> str:
+    """Each contractor is in exactly one group, so the header counts add up: left out of
+    matching, available now, or booked / free later."""
+    if not item.available:
+        return "left_out"
+    return "now" if item.available_now else "later"
+
+
+def talent_in_filter(item: TalentOverview, name: str) -> bool:
+    return name == "all" or talent_group(item) == name
+
+
+def sort_talent(items: list[TalentOverview], how: str) -> list[TalentOverview]:
+    """ "name": people in matching first, then A-Z (the service's order); "updated": the
+    newest profile first, profiles with no date last."""
+    if how == "updated":
+        return sorted(
+            items,
+            key=lambda t: (t.profile_updated is None, -(t.profile_updated or date.min).toordinal()),
+        )
+    return list(items)
+
+
+def profile_age(updated: date | None, today: date | None = None) -> tuple[str, bool] | None:
+    """ "Profile updated 2026-03-01 (8 months ago)" and whether it is getting old (6 months or
+    more); None when the profile has no date."""
+    if updated is None:
+        return None
+    days = ((today or datetime.now(UTC).date()) - updated).days
+    months = days // 30
+    ago = "this month" if months < 1 else f"{plural(months, 'month')} ago"
+    return f"Profile updated {plain_day(updated)} ({ago})", months >= 6
+
+
 def _talent_card(
-    service: AppService, item: TalentOverview, refresh: Callable[[], None], opened: set[str]
+    service: AppService,
+    item: TalentOverview,
+    refresh: Callable[[], None],
+    opened: set[str],
+    sheet_url: str = "",
+    native: bool = False,
+    new: bool = False,
 ) -> None:
+    """One contractor as a compact row (name, tags, headline); click it for the note, the
+    approved jobs and the ID tools. The switch, Profile and Résumé stay on the row."""
     background, border = TALENT_STYLE[item.available]
-    card = ui.card().props("flat").classes("w-full px-4 py-3 gap-1 rounded-2xl")
+    card = ui.card().props("flat").classes("w-full px-3 py-1 gap-1 rounded-2xl dg-row")
     card.style(f"background-color: {background}; border: 2px solid {border};")
     card.mark("talent-card", f"talent-{'available' if item.available else 'unavailable'}")
 
-    def save() -> None:
+    def flip(e: ValueChangeEventArguments) -> None:
+        """The switch saves as soon as it is flipped (user decision 2026-11-18); the toast
+        has Undo."""
+        before, before_note = item.available, (item.toggled.note if item.toggled else "") or ""
         try:
-            service.set_talent_availability(item.talent_id, bool(switch.value), note.value or "")
+            service.set_talent_availability(item.talent_id, bool(e.value))
         except RUN_ERRORS as exc:
             ui.notify(str(exc), type="warning")
             return
-        ui.notify("Saved.", type="positive")
         refresh()
+
+        def undo() -> None:
+            try:
+                service.set_talent_availability(item.talent_id, before, before_note)
+            except RUN_ERRORS as exc:
+                ui.notify(str(exc), type="warning")
+                return
+            refresh()
+
+        state = "included in matching" if e.value else "left out of matching"
+        undo_toast(f"Saved: {state}.", undo)
 
     def remember(e: ValueChangeEventArguments) -> None:
         (opened.add if e.value else opened.discard)(item.talent_id)
@@ -1934,26 +2330,51 @@ def _talent_card(
             [
                 "Everything about them leaves the app: profile, résumé, availability, "
                 "recommendations, your decisions on them and their application statuses.",
-                "Your contractor folder is not touched: importing it again adds them back.",
+                "Your contractor folder is not touched: adding it again brings them back.",
             ],
             go,
         )
 
-    with card:
-        with ui.row().classes("w-full items-stretch no-wrap gap-4"):
-            # The availability switch, in its own section on the left (user request).
-            with ui.column().classes(
-                "items-center justify-center gap-0 pr-2 border-r border-grey-4 w-20 shrink-0"
-            ):
-                switch = ui.switch(value=item.available).mark(f"available:{item.talent_id}")
-                ui.label("Available").classes("text-xs text-grey-8 text-center leading-tight")
-            with ui.column().classes("flex-1 min-w-0 gap-1"):
+    def copy_id() -> None:
+        ui.clipboard.write(item.talent_id)
+        ui.notify(f"ID {item.talent_id} copied.", type="positive")
+
+    def open_sheet() -> None:
+        ui.clipboard.write(item.talent_id)
+        ui.navigate.to(sheet_url, new_tab=True)
+        toast(
+            f"ID {item.talent_id} copied. Search for it in the Sheet (Ctrl+F).",
+            icon="content_paste",
+        )
+
+    age = profile_age(getattr(item, "profile_updated", None))
+    availability = getattr(item, "availability", None)
+    same = list(getattr(item, "same_name_ids", []) or [])
+    with card, ui.row().classes("w-full items-start no-wrap gap-3"):
+        # The availability switch, in its own section on the left (user request).
+        with ui.column().classes(
+            "items-center justify-center gap-0 pr-2 border-r border-grey-4 w-24 shrink-0 "
+            "self-stretch"
+        ):
+            ui.switch(value=item.available, on_change=flip).mark(f"available:{item.talent_id}")
+            ui.label("Include in matching").classes(
+                "text-xs text-grey-8 text-center leading-tight"
+            ).mark(f"include-label:{item.talent_id}")
+        with (
+            ui.expansion(value=item.talent_id in opened, on_value_change=remember)
+            .props("dense")
+            .classes("flex-1 min-w-0 text-sm")
+            .mark(f"talent-jobs:{item.talent_id}") as row
+        ):
+            with row.add_slot("header"), ui.column().classes("gap-0 w-full min-w-0 py-1"):
                 with ui.row().classes("items-center gap-2"):
                     ui.label(item.name).classes("text-h6")
+                    if new:
+                        ui.label("New").classes("dg-new-tag").mark("new-tag")
                     if not item.available:
-                        ui.label("Not available for matching").classes(
+                        ui.label("Left out of matching").classes(
                             "text-xs px-2 rounded bg-grey-4 text-grey-9"
-                        )
+                        ).mark("left-out-tag")
                     # The contractor's own answer, when the reviewer's toggle disagrees.
                     if item.toggled is not None and item.toggled.available != item.profile_open:
                         said = "open" if item.profile_open else "not open"
@@ -1964,91 +2385,131 @@ def _talent_card(
                         ui.label("Profile says: not open to contract work").classes(
                             "text-xs px-2 rounded bg-grey-3 text-grey-9"
                         )
+                    if availability:
+                        text, colours = free_chip(item)
+                        ui.label(text).classes(f"text-xs px-2 rounded {colours}").mark(
+                            "availability-note"
+                        )
+                    if same:
+                        ui.label("Same name as another contractor").classes(
+                            "text-xs px-2 rounded bg-orange-2 text-grey-9"
+                        ).mark("same-name-flag").tooltip("Maybe a duplicate: " + ", ".join(same))
                 if item.headline:
-                    ui.label(item.headline).classes("text-grey-8")
+                    ui.label(item.headline).classes("text-grey-8 dg-clamp2")
+            with ui.column().classes("w-full gap-2 pt-1"):
                 if item.toggled is not None:
                     t = item.toggled
                     state = "available" if t.available else "not available"
-                    line = f"Set {state} by {t.reviewer} on {t.changed_at:%Y-%m-%d}"
-                    ui.label(line + (f": {t.note}" if t.note else "")).classes(
-                        "text-xs text-grey-7"
-                    ).mark("talent-note")
-            # Right section: Profile, Résumé and Save on the first row, the note under them
-            # (user request).
-            with ui.column().classes("gap-2 self-start items-stretch shrink-0"):
-                with ui.row().classes("items-center justify-end gap-2 no-wrap"):
-                    ui.button(
-                        "Profile",
-                        icon="badge",
-                        on_click=lambda: _profile_dialog(service, item.talent_id, item.name),
-                    ).props("outline dense no-caps").classes("bg-white pl-1 pr-3")
-                    resume_button(
-                        item.talent_id, item.name, item.has_resume, f"resume:{item.talent_id}"
+                    line = f"Set {state} by {t.reviewer} on {plain_day(t.changed_at.astimezone())}."
+                    ui.label(line).classes("text-xs text-grey-7").mark("talent-set")
+                if age is not None:
+                    ui.label(age[0]).classes(
+                        "text-xs " + ("text-orange-9 font-medium" if age[1] else "text-grey-7")
+                    ).mark("profile-age")
+                ui.label(item.note or "No note").classes(
+                    "w-full max-w-xs text-sm px-2 py-1 rounded border border-grey-4 bg-white "
+                    "whitespace-pre-wrap " + ("" if item.note else "text-grey-6 italic")
+                ).mark(f"note:{item.talent_id}")
+                with ui.row().classes("items-center gap-2"):
+                    ui.button("Copy ID", icon="content_copy", on_click=copy_id).props(
+                        "outline dense no-caps"
+                    ).classes("bg-white pl-1 pr-3").mark(f"copy-id:{item.talent_id}").tooltip(
+                        item.talent_id
                     )
-                    # Icon only, the same height as Profile and Résumé (user request).
-                    ui.button(icon="save", on_click=save).props(
-                        'outline dense aria-label="Save availability"'
-                    ).classes("bg-white px-2").mark(f"save-available:{item.talent_id}").tooltip(
-                        "Save availability"
-                    )
-                note = (
-                    ui.input(placeholder="Note (optional)")
-                    .props("dense outlined bg-color=white")
-                    .classes("w-full")
-                    .mark(f"note:{item.talent_id}")
-                )
-        live = [j for j in item.jobs if not j.removed]
-        with ui.row().classes("w-full items-start no-wrap gap-2"):
-            with (
-                ui.expansion(
-                    f"Approved for jobs ({len(live)})",
-                    icon="work",
-                    value=item.talent_id in opened,
-                    on_value_change=remember,
-                )
-                .props("dense")
-                .classes("flex-1 min-w-0 text-sm talent-jobs")
-                .mark(f"talent-jobs:{item.talent_id}")
-            ):
+                    if sheet_url:
+                        ui.button("Open in Sheet", icon="table_chart", on_click=open_sheet).props(
+                            "outline dense no-caps"
+                        ).classes("bg-white pl-1 pr-3").mark(f"open-sheet:{item.talent_id}")
+                live = [j for j in item.jobs if not j.removed]
+                ui.label(f"Approved for jobs ({len(live)})").classes("font-bold text-sm")
                 _talent_jobs_table(item)
-            # Away from Save (user request): the card's bottom-right corner, icon only.
-            if not item.available:
-                danger_button("", delete, f"delete-talent:{item.talent_id}").tooltip(
-                    "Delete this contractor and all their data"
-                )
+                if not item.available:
+                    danger_button(
+                        "Delete this contractor", delete, f"delete-talent:{item.talent_id}"
+                    )
+        with ui.row().classes("items-center justify-end gap-2 no-wrap shrink-0 self-center"):
+            ui.button(
+                "Profile",
+                icon="badge",
+                on_click=lambda: _profile_dialog(
+                    service,
+                    item.talent_id,
+                    item.name,
+                    editable=True,
+                    note=item.note,
+                    on_saved=refresh,
+                ),
+            ).props("outline dense no-caps").classes("bg-white pl-1 pr-3").mark(
+                f"profile:{item.talent_id}"
+            )
+            resume_button(
+                item.talent_id,
+                item.name,
+                item.has_resume,
+                f"resume:{item.talent_id}",
+                service=service,
+                native=native,
+                on_change=refresh,
+            )
 
 
 def talent_page(service: AppService, native: bool) -> None:
+    try:
+        sheet_url = service.links().get("intake_sheet", "") if hasattr(service, "links") else ""
+    except Exception:  # noqa: BLE001 (the button is only a convenience)
+        sheet_url = ""
     shown: list[str] = []  # talent IDs in on-screen order, fixed when the page opens
     opened: set[str] = set()
-    query = {"text": ""}
+    query = {"text": "", "filter": "all", "sort": "name"}
+    new_people = service.new_items().people  # what arrived since this screen was last opened
+    service.mark_seen("talent")
 
     @ui.refreshable
     def body() -> None:
         everyone = service.talent_overview()
+        if not shown:  # a new sort order (or the first draw) sets the order; then no jumping
+            everyone = sort_talent(everyone, query["sort"])
         place = {talent_id: i for i, talent_id in enumerate(shown)}
-        everyone.sort(key=lambda t: place.get(t.talent_id, len(place)))  # no jumping
+        everyone.sort(key=lambda t: place.get(t.talent_id, len(place)))
         shown[:] = [t.talent_id for t in everyone]
-        available = sum(t.available for t in everyone)
-        ui.label(
-            f"{len(everyone)} contractor(s) · {available} available for matching · "
-            f"{len(everyone) - available} not available"
-        ).classes("text-sm text-grey-8")
+        groups = [talent_group(t) for t in everyone]
+        now, later, out = (groups.count(g) for g in ("now", "later", "left_out"))
+        parts = [plural(len(everyone), "contractor"), f"{now} available now"]
+        if later:
+            parts.append(f"{later} booked or free later")
+        if out:
+            parts.append(f"{out} left out of matching")
+        ui.label(" · ".join(parts)).classes("text-sm text-grey-8").mark("talent-header")
         words = query["text"].casefold().split()
         matching = [
             t
             for t in everyone
             if all(w in f"{t.name} {t.headline or ''}".casefold() for w in words)
+            and talent_in_filter(t, query["filter"])
         ]
         if not everyone:
-            ui.label("No contractors yet. Pick the contractor list on Find matches.")
+            ui.label("No contractors yet. Add your contractor list on Home.")
         elif not matching:
             ui.label("Nobody matches the search.").classes("text-grey-7")
         for item in matching:
-            _talent_card(service, item, body.refresh, opened)
+            _talent_card(
+                service, item, body.refresh, opened, sheet_url, native, item.talent_id in new_people
+            )
 
     def search(e: ValueChangeEventArguments) -> None:
         query["text"] = e.value or ""
+        body.refresh()
+
+    def pick_filter(name: str) -> None:
+        query["filter"] = name
+        filter_button.text = "" if name == "all" else TALENT_FILTERS[name]
+        filter_button.props(f"color={'primary' if name != 'all' else 'grey-8'}")
+        body.refresh()
+
+    def pick_sort(name: str) -> None:
+        query["sort"] = name
+        sort_button.text = TALENT_SORTS[name]
+        shown.clear()
         body.refresh()
 
     # A smaller "work" icon on the "Approved for jobs" caret (user request 2026-11-09).
@@ -2057,17 +2518,48 @@ def talent_page(service: AppService, native: bool) -> None:
         ".talent-jobs .q-item__section--avatar .q-icon { font-size: 16px; }"
     )
     with ui.column().classes(f"{PAGE} gap-3"):
-        ui.label("Talent").classes("text-h5")
-        ui.label(
-            "Turn off Available for matching when a contractor isn't looking for a project "
-            "(check with them first): they are no longer sent to Gemini, and their open "
-            "recommendations make room for others. A hire never changes it. Profile changes go "
-            "through the contractor intake form and the next contractor list import; a new or "
-            "changed profile in an import sets it from the contractor's own answer."
-        ).classes("text-xs text-grey-7")
-        ui.input(placeholder="Search by name or headline", on_change=search).props(
-            "dense outlined clearable bg-color=white"
-        ).classes("w-full max-w-md").mark("talent-search")
+        with ui.row().classes("items-center gap-1"):
+            ui.label("Talent").classes("text-h5")
+            help_icon(
+                "Turn off Include in matching when a contractor is not looking for a "
+                "project (check with them first): they are no longer sent to Gemini, and their "
+                "open recommendations make room for others. The switch saves as soon as you "
+                "flip it; a hire never changes it. The coloured tag (Available now, Booked "
+                "until...) is what the contractor's own profile says about their time. "
+                "Profile opens the contractor's details: "
+                "Edit changes them and Save stores them with your note. Your edits stay until "
+                "the contractor file changes that contractor; then only the fields the file "
+                "changed are taken. A new or changed profile in an import sets the switch "
+                "from the contractor's own answer."
+            )
+        with ui.row().classes("w-full items-center gap-3"):
+            ui.input(placeholder="Search by name or headline", on_change=search).props(
+                "dense outlined clearable bg-color=white"
+            ).classes("w-full max-w-md").mark("talent-search")
+            with (
+                ui.button(icon="filter_list")
+                .props("outline dense no-caps icon-right=arrow_drop_down color=grey-8")
+                .classes("bg-white pl-2")
+                .mark("talent-filter")
+                .tooltip("Filter contractors") as filter_button,
+                ui.menu(),
+            ):
+                for name, text in TALENT_FILTERS.items():
+                    ui.menu_item(text, on_click=lambda n=name: pick_filter(n)).mark(
+                        f"talent-filter:{name}"
+                    )
+            with (
+                ui.button(TALENT_SORTS["name"], icon="sort")
+                .props("outline dense no-caps icon-right=arrow_drop_down color=grey-8")
+                .classes("bg-white pl-2")
+                .mark("talent-sort")
+                .tooltip("Sort contractors") as sort_button,
+                ui.menu(),
+            ):
+                for name, text in TALENT_SORTS.items():
+                    ui.menu_item(text, on_click=lambda n=name: pick_sort(n)).mark(
+                        f"talent-sort:{name}"
+                    )
         body()
 
 
@@ -2075,16 +2567,21 @@ def talent_page(service: AppService, native: bool) -> None:
 
 
 def settings_page(service: AppService, native: bool) -> None:
+    ui.add_css(
+        ".dg-adv .q-item { border-radius: 1.25rem; background: #FBFAFE; min-height: 52px;"
+        " border: 2px solid #E4DFF3; }"
+        ".dg-adv .q-item__label { font-weight: 600; color: #4B3499; }"
+        ".dg-adv .q-item__section--avatar { color: #593B9D; }"
+    )
     with ui.column().classes(f"{PAGE_NARROW} gap-4"):
         ui.label("Settings").classes("text-h5")
         with ui.card().classes("w-full"):
-            ui.label("Gemini key").classes("text-h6")
+            with ui.row().classes("items-center gap-1"):
+                ui.label("Gemini key").classes("text-h6")
+                help_icon(KEY_HELP)
             state = ui.label(
                 "A key is saved." if service.has_key() else "No key saved yet."
             ).classes("text-sm")
-            ui.label(
-                "Free key from Google AI Studio. It stays on this computer and is never shown."
-            ).classes("text-xs text-grey-7")
             key = (
                 ui.input("Paste a new key", password=True, password_toggle_button=True)
                 .classes("w-full")
@@ -2104,8 +2601,11 @@ def settings_page(service: AppService, native: bool) -> None:
             ui.button("Save key", on_click=save_key)
 
         with ui.card().classes("w-full"):
-            ui.label("Your name").classes("text-h6")
-            ui.label("Stored with each approve / reject decision.").classes("text-xs text-grey-7")
+            with ui.row().classes("items-center gap-1"):
+                ui.label("Your name").classes("text-h6")
+                help_icon(
+                    "Saved with each approve or reject decision, and used to sign the emails."
+                )
             name = ui.input("Reviewer", value=service.reviewer()).classes("w-full")
 
             def save_name() -> None:
@@ -2118,19 +2618,135 @@ def settings_page(service: AppService, native: bool) -> None:
 
             ui.button("Save name", on_click=save_name)
 
-        with ui.card().classes("w-full"):
-            ui.label("Data folder").classes("text-h6")
-            ui.label(str(service.data_dir)).classes("text-sm font-mono")
-            ui.label(
-                "Jobs, contractors, results and exports live here. Contractor data is personal: "
-                "keep this computer password-protected."
-            ).classes("text-xs text-grey-7")
-            if native:
-                ui.button(
-                    "Show in folder", on_click=lambda: open_in_file_manager(service.data_dir)
-                ).props("outline")
+        if hasattr(service, "sync_link_hint"):
+            link_card(service)
 
-        backup_card(service, native)
+        folders_and_links_card(service, native)
+
+        # Anything technical stays folded away until someone wants it.
+        with (
+            ui.expansion("Advanced", icon="tune")
+            .props("dense")
+            .classes("dg-adv w-full")
+            .mark("settings-advanced"),
+            ui.column().classes("w-full gap-4 pt-2"),
+        ):
+            with ui.card().classes("w-full"):
+                with ui.row().classes("items-center gap-1"):
+                    ui.label("Data folder").classes("text-h6")
+                    help_icon(
+                        "Jobs, contractors, results and exports live here. Contractor data "
+                        "is personal: keep this computer password-protected."
+                    )
+                ui.label(str(service.data_dir)).classes("text-sm font-mono")
+                if native:
+                    ui.button(
+                        "Show in folder", on_click=lambda: open_in_file_manager(service.data_dir)
+                    ).props("outline")
+            backup_card(service, native)
+
+
+def folders_and_links_card(service: AppService, native: bool) -> None:
+    """The remembered Contractors folder and jobs folder (read again every time you match and
+    when the app opens), and the three links shown as buttons on Home."""
+    if not hasattr(service, "links"):
+        return
+    with ui.card().classes("w-full gap-2").mark("folders-card"):
+        with ui.row().classes("items-center gap-1"):
+            ui.label("Folders and links").classes("text-h6")
+            help_icon(
+                "The app remembers your Contractors folder and your jobs folder. It reads "
+                "them again when it opens and every time you click Find matches, so new "
+                "people and new jobs show up by themselves. The three links become buttons "
+                "on Home."
+            )
+
+        def folder_row(label: str, current: Path | None, marker: str, save, forget) -> None:  # noqa: ANN001
+            with ui.row().classes("w-full items-center gap-2 no-wrap"):
+                field = (
+                    ui.input(label, value=str(current) if current else "")
+                    .props('outlined dense placeholder="Not set"')
+                    .classes("flex-1")
+                    .mark(marker)
+                )
+
+                async def choose() -> None:
+                    window = nicegui_app.native.main_window
+                    if window is None:
+                        ui.notify("The folder dialog is not available.", type="negative")
+                        return
+                    import webview  # noqa: PLC0415 (only in the desktop app)
+
+                    chosen = await window.create_file_dialog(webview.FileDialog.FOLDER)
+                    if chosen:
+                        field.value = str(chosen[0])
+                        apply()
+
+                def apply() -> None:
+                    text = (field.value or "").strip()
+                    if not text:
+                        forget()
+                        ui.notify(f"{label}: forgotten.", type="positive")
+                        return
+                    try:
+                        save(Path(text))
+                    except AppError as exc:
+                        failure_slot.clear()
+                        with failure_slot:
+                            failure_card(str(exc), apply, what=f"{label} did not work.")
+                        return
+                    failure_slot.clear()
+                    ui.notify(f"{label}: remembered.", type="positive")
+
+                if native:
+                    ui.button("Browse…", icon="folder_open", on_click=choose).props(
+                        "outline dense no-caps"
+                    ).classes("bg-white").mark(f"{marker}-browse")
+                ui.button("Save", on_click=apply).props("outline dense no-caps").classes(
+                    "bg-white"
+                ).mark(f"{marker}-save")
+
+        failure_slot = ui.column().classes("w-full")
+        folder_row(
+            "Contractors folder",
+            service.contractors_folder(),
+            "setting-contractors-folder",
+            service.pick_contractor_folder,
+            service.forget_contractors_folder,
+        )
+        folder_row(
+            "Jobs folder",
+            service.jobs_folder(),
+            "setting-jobs-folder",
+            service.set_jobs_folder,
+            lambda: service.set_jobs_folder(None),
+        )
+        links = service.links()
+        fields: dict[str, ui.input] = {}
+        for key, label in (
+            ("intake_form", "Contractor form link"),
+            ("intake_sheet", "Contractor Sheet link"),
+            ("job_collector_sheet", "Jobs Sheet link"),
+        ):
+            fields[key] = (
+                ui.input(label, value=links.get(key, ""))
+                .props('outlined dense placeholder="https://…"')
+                .classes("w-full")
+                .mark(f"setting-link:{key}")
+            )
+
+        def save_links() -> None:
+            try:
+                for key, field in fields.items():
+                    service.save_link(key, field.value or "")
+            except AppError as exc:
+                ui.notify(str(exc), type="warning", multi_line=True)
+                return
+            ui.notify("Links saved.", type="positive")
+
+        ui.button("Save links", icon="save", on_click=save_links).props("outline no-caps").mark(
+            "setting-links-save"
+        )
 
 
 # ---- export and import of all data (user decisions 2026-11-10) ----
@@ -2142,13 +2758,17 @@ def _size(n: int) -> str:
 
 def backup_card(service: AppService, native: bool) -> None:
     with ui.card().classes("w-full gap-2"):
-        ui.label("Back up or move the app").classes("text-h6")
-        ui.label(
-            "Export saves all jobs, contractors, résumés, decisions and Gemini's saved answers "
-            "in one password-protected file. Import replaces this app's data with such a file, "
-            "for a new computer, a new person or after a reset. The Gemini key and the reviewer "
-            "name are never in the file: enter them here after an import."
-        ).classes("text-sm text-grey-8")
+        with ui.row().classes("items-center gap-1"):
+            ui.label("Back up or move the app").classes("text-h6")
+            help_icon(
+                "Export saves all jobs, contractors, résumés, decisions and Gemini's saved "
+                "answers in one password-protected file. Import replaces this app's data with "
+                "such a file, for a new computer, a new person or after a reset. The Gemini "
+                "key and your name are never in the file: enter them again after an import."
+            )
+        ui.label("Save everything to one protected file, or load one.").classes(
+            "text-sm text-grey-8"
+        )
         with ui.row().classes("gap-2"):
             ui.button(
                 "Export all data", icon="archive", on_click=lambda: export_dialog(service, native)
@@ -2203,7 +2823,7 @@ def export_dialog(service: AppService, native: bool) -> None:
                 return
             dialog.close()
             ui.notify(
-                f"Exported {info.jobs} job(s) and {info.contractors} contractor(s) "
+                f"Exported {plural(info.jobs, 'job')} and {plural(info.contractors, 'contractor')} "
                 f"({_size(info.size)}).",
                 type="positive",
             )
@@ -2289,7 +2909,7 @@ def confirm_import(service: AppService, info: BackupInfo) -> None:
         ui.label("Replace this app's data?").classes("text-h6")
         ui.label(
             f"Now: {jobs} job(s) and {contractors} contractor(s). The backup from "
-            f"{info.created_at:%Y-%m-%d %H:%M} UTC (app {info.app_version}): {info.jobs} job(s), "
+            f"{plain_when(info.created_at)} (app {info.app_version}): {info.jobs} job(s), "
             f"{info.contractors} contractor(s), {info.files} file(s), {_size(info.size)}."
         ).classes("text-sm")
         ui.label(
@@ -2333,6 +2953,7 @@ def _go(path: str) -> Callable[[], None]:
 def build_root(service: AppService, *, native: bool) -> Callable[[], None]:
     def root() -> None:
         _serve_resumes(service)  # here, not once at start: the test harness resets routes
+        service.note_app_opened()  # once per start: what is "new since last time" counts from here
         ui.page_title(APP_TITLE)
         ui.colors(primary=THEME_PRIMARY, secondary=THEME_ACCENT, accent=THEME_ACCENT)
         ui.add_css(APP_CSS)
@@ -2343,9 +2964,9 @@ def build_root(service: AppService, *, native: bool) -> Callable[[], None]:
         with ui.header().classes("items-center px-6 py-3 gap-1"):
             ui.html(WORDMARK_HTML, sanitize=False).on("click", _go("/")).mark("app-title")
             ui.space()
-            run_indicator(service)
+            run_indicator(service, native)
             for text, path in (
-                ("Find matches", "/"),
+                ("Home", "/"),
                 ("Results", "/results"),
                 ("Jobs", "/jobs"),
                 ("Talent", "/talent"),
@@ -2362,6 +2983,7 @@ def build_root(service: AppService, *, native: bool) -> Callable[[], None]:
             {
                 "/": lambda: home_page(service, native),
                 "/results": lambda: results_page(service, native),
+                "/review": lambda: review_page(service, native),
                 "/jobs": lambda: jobs_page(service, native),
                 "/talent": lambda: talent_page(service, native),
                 "/settings": lambda: settings_page(service, native),

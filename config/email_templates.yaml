@@ -1,0 +1,62 @@
+# The wording of the emails the "Write the email" button prepares on a match. Edit the text
+# freely; the app never sends anything, a person copies the email or opens it in their own
+# email program.
+#
+# How the texts work:
+#   {slot}          is replaced by the match's data. If the data is missing, that whole LINE is
+#                   left out (so the email never shows "None" or an empty gap).
+#   {slot|words}    uses "words" instead when the data is missing ({slot|} uses nothing).
+# If this file is missing or broken, the app uses the same texts built into it.
+#
+# Slots for the email to the client (company that posted the job):
+#   {contact_first} {contact_name} {job_title} {company} {at_company} {in_location} {link}
+#   {suggested} {who} {sender} {contractor_blocks}
+#   ({at_company} gives " at Fueled", {in_location} gives " in Toronto, ON", both empty if unknown;
+#    {who} = the contractor's name(s); {contractor_blocks} = one "contractor" block per person)
+# Slots for each "contractor" block:
+#   {name} {role} {name_role} {why} {highlights}
+#   ({why} and {highlights} hold the person's strengths only: a client never sees gaps, flags or scores;
+#    {reason} gives the same text as {why}; {match_text} and {score} are always empty here)
+# Slots for the email to the contractor:
+#   {first} {name} {role} {as_role} {job_title} {company} {at_company} {where} {link} {sender}
+#   ({where} = location and work mode, e.g. "Toronto, ON (remote)")
+# {sender} is the reviewer name set on the Settings screen.
+
+client:
+  subject: "{suggested} for {job_title}{at_company}"
+  body: |-
+    Hello {contact_first|there},
+
+    I am writing from do good, a talent company, about your {job_title} opening{at_company}{in_location}. I would like to suggest {who}.
+
+    {contractor_blocks}
+
+    Your posting: {link}
+
+    If you would like to talk with them, reply to this email and I will set up an introduction.
+
+    Best regards,
+    {sender|The do good team}
+    do good, a talent company
+  contractor: |-
+    {name_role}
+    {why}
+    {highlights}
+
+contractor:
+  subject: "A contract that may suit you: {job_title}{at_company}"
+  body: |-
+    Hello {first|there},
+
+    I am writing from do good, a talent company. A contract has come up that looks like a good fit for your background{as_role}.
+
+    Job: {job_title}
+    Company: {company}
+    Where: {where}
+    Posting: {link}
+
+    Are you interested, and are you available to start soon? If so, please reply and I will go over the next steps with you. If it is not for you, no problem, just let me know.
+
+    Best regards,
+    {sender|The do good team}
+    do good, a talent company

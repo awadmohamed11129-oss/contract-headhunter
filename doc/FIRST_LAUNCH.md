@@ -60,6 +60,17 @@ Use the free tier: don't turn on billing in Google's site. The key stays on your
 5. If a message asks about **today's Gemini quota**, the run would use most of the free daily allowance. Click **Yes, go ahead**, or **Not now** to wait until tomorrow (the allowance resets at midnight Pacific time).
 6. Click **See results**.
 
+### Get latest: no more carrying files by hand (optional)
+
+If you were given a **do good link** (it looks like `https://script.google.com/macros/s/…/exec?sync=…`), the app can fetch your newest contractors and jobs by itself.
+
+1. Open **Settings**, find **Your do good link**, click **Paste** (or press Ctrl+V in the box), then **Test link**. It says, for example, "It works. 31 contractors and 12 jobs found."
+2. Click **Save link**. Open **Home**: your contractors and jobs load by themselves.
+3. From then on the app checks quietly each time it opens. The **Contractors** and **Jobs** rows say where the list comes from and when it was checked ("from your intake form, checked today 9:10 am, +2 new"). Click **Get latest** to check right now.
+4. No internet? The app keeps working with the last copy and says so in one calm line.
+
+The link is private: anyone who has it can download your list, so do not share it. The app only ever downloads; nothing is sent from your computer. After saving, only the last 4 characters of the link are shown. **Change…** still lets you pick a folder by hand; a folder you picked by hand is not replaced when the app opens, only when you click **Get latest**.
+
 ## 5. Review the results
 
 Each job is a card:

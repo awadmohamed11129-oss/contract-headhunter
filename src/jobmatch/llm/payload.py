@@ -18,7 +18,7 @@ import re
 from pydantic import BaseModel
 
 from jobmatch.config import LlmPayloadSettings
-from jobmatch.normalize.contact import EMAIL
+from jobmatch.normalize.contact import EMAIL, PHONE
 from jobmatch.schemas import (
     Commitment,
     EmploymentType,
@@ -52,8 +52,9 @@ def content_hash(text: str) -> str:
 
 def neutralize(text: str) -> str:
     """One line of untrusted text: whitespace collapsed, angle brackets replaced, email
-    addresses masked (a posting's HR contact is personal data and says nothing about fit)."""
-    text = EMAIL.sub("[email]", text)
+    addresses and phone numbers masked (a posting's HR contact is personal data and says nothing
+    about fit)."""
+    text = PHONE.sub("[phone]", EMAIL.sub("[email]", text))
     return _SPACES.sub(" ", text).replace("<", "‹").replace(">", "›").strip()
 
 

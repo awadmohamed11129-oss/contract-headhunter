@@ -24,7 +24,8 @@ import hashlib
 import os
 import shutil
 import tempfile
-from collections.abc import Iterable, Mapping
+import zipfile
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 
@@ -36,6 +37,8 @@ CONTRACTOR_SUFFIXES = (".xlsx", ".csv")
 RESUME_FOLDER_NAMES = ("resume", "resumes")
 RESUME_SUFFIX = ".pdf"
 PDF_MAGIC = b"%PDF-"
+ZIP_SUFFIX = ".zip"
+MAX_UNZIPPED_BYTES = 2 * 1024**3  # a Contractors folder is a few MB; this only stops a zip bomb
 
 
 class ContractorFolderError(ContractorFileError):
@@ -91,6 +94,54 @@ def read_contractor_folder(folder: Path) -> ContractorFolder:
     return ContractorFolder(
         contractor_file=files[0],
         resumes=resume_files(subfolders[0].iterdir()) if subfolders else {},
+    )
+
+
+def _has_contractor_file(folder: Path) -> bool:
+    return any(
+        p.is_file() and _visible(p) and p.suffix.lower() in CONTRACTOR_SUFFIXES
+        for p in folder.iterdir()
+    )
+
+
+def unpack_zips(zips: Sequence[Path], dest: Path) -> Path:
+    """Unpack one or several zips of the Contractors folder into the empty folder `dest` and
+    return the folder that holds the contractor file: `dest` itself, or the one folder inside
+    it (Google Drive's "Download" wraps everything in a top folder, and splits a big download
+    into several zips that are merged here). Only plain files are written, each strictly
+    inside `dest`; a name that would land outside it, or a zip too big, stops the import."""
+    total = 0
+    for zip_path in zips:
+        try:
+            with zipfile.ZipFile(zip_path) as archive:
+                for info in archive.infolist():
+                    name = info.filename.replace("\\", "/")
+                    parts = [p for p in name.split("/") if p]
+                    if info.is_dir() or not parts or parts[0] == "__MACOSX":
+                        continue
+                    target = dest.joinpath(*parts)
+                    if (
+                        name.startswith("/")
+                        or ".." in parts
+                        or any(":" in p or p.endswith((".", " ")) for p in parts)
+                        or not target.resolve().is_relative_to(dest.resolve())
+                    ):
+                        raise ContractorFolderError(f"{zip_path.name}: unsafe file name in the zip")
+                    total += info.file_size
+                    if total > MAX_UNZIPPED_BYTES:
+                        raise ContractorFolderError(f"{zip_path.name}: the zip is too big")
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with archive.open(info) as src, target.open("wb") as out:
+                        shutil.copyfileobj(src, out)
+        except zipfile.BadZipFile as exc:
+            raise ContractorFolderError(f"{zip_path.name}: not a valid zip file") from exc
+    candidates = [dest, *sorted(p for p in dest.iterdir() if p.is_dir() and _visible(p))]
+    for folder in candidates:
+        if _has_contractor_file(folder):
+            return folder
+    raise ContractorFolderError(
+        "no contractor file (.xlsx or .csv) in the zip: zip the Contractors folder with "
+        "contractors.csv and the resumes folder"
     )
 
 
@@ -162,6 +213,37 @@ def store_resumes(
             report.added += 1
         _copy_atomic(source, dest)
     return report
+
+
+def store_resume(data_dir: Path, talent_id: str, data: bytes, now: datetime) -> str:
+    """One résumé uploaded on the Talent screen (user request 2026-11-18), stored as
+    <talent_id>.pdf: "added", "replaced" (the old copy moved to old/ with a timestamp first,
+    never deleted) or "unchanged". The caller checks the talent ID is in the list. The
+    uploaded file's own name is never used (it may hold the person's name)."""
+    if not data.startswith(PDF_MAGIC):
+        raise ValueError("That file is not a PDF.")
+    folder = resumes_dir(data_dir)
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = folder / f"{talent_id}{RESUME_SUFFIX}"
+    outcome = "added"
+    if dest.exists():
+        if hashlib.sha256(data).hexdigest() == _digest(dest):
+            return "unchanged"
+        old = folder / "old"
+        old.mkdir(exist_ok=True)
+        os.replace(dest, old / f"{talent_id}-{now:%Y%m%dT%H%M%SZ}{RESUME_SUFFIX}")
+        outcome = "replaced"
+    fd, tmp = tempfile.mkstemp(dir=folder, prefix=f".{talent_id}-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as out:
+            out.write(data)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(tmp, dest)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    return outcome
 
 
 def stored_resume(data_dir: Path, talent_id: str, known_ids: Iterable[str]) -> Path | None:

@@ -11,7 +11,10 @@
 
 Only `url` and `title` are required. With nothing after `---` the job is a stub
 (status needs_details) to be completed later by pasting the text into the same file.
-Lines starting with "#" in the header are comments. No network access happens here.
+Optional header fields: contact_person, contact_email, contact_phone, apply_url (otherwise
+found in the posting text). Lines starting with "#" in the header are comments, except the
+job collector's two plain-words lines, which are kept: "# why kept: ..." and "# fits: ...".
+No network access happens here.
 """
 
 import hashlib
@@ -27,11 +30,21 @@ from jobmatch.schemas import RawJob, RawRecord
 
 SEPARATOR = "---"
 FIELDS = ("url", "title", "company", "location", "employment_type", "posted")
+EXTRA_FIELDS = ("contact_person", "contact_email", "contact_phone", "apply_url")
+# Comment lines the job collector writes: "# why kept: ..." -> why_kept, "# fits: ..." ->
+# fits_roles.
+_COLLECTOR_LINES = {"why_kept": "why kept", "fits_roles": "fits"}
+_LABEL_PREFIX = re.compile(r"^(?:fits|why[ \t]+kept)[ \t]*:[ \t]*", re.IGNORECASE)
 SOURCE_LINKEDIN = "manual_linkedin"
 SOURCE_OTHER = "manual"
 
 _LINKEDIN_VIEW = re.compile(r"/jobs/view/(?:[^/?#]*?-)?(\d{6,})")
 _TRACKING_PARAMS = re.compile(r"^(utm_|trk|ref|refid|tracking)", re.IGNORECASE)
+
+
+def collector_text(value: str) -> str:
+    """A collector line without a repeated label: "Fits: sql (2)" -> "sql (2)"."""
+    return _LABEL_PREFIX.sub("", value.strip(), count=1).strip()
 
 
 class PasteFormatError(ValueError):
@@ -81,13 +94,20 @@ def parse_paste(text: str, *, file_name: str, fetched_at: datetime) -> tuple[Raw
 
     fields: dict[str, str | None] = {}
     for number, line in enumerate(lines[:separator], start=1):
-        if not line.strip() or line.lstrip().startswith("#"):
+        if not line.strip():
+            continue
+        if line.lstrip().startswith("#"):
+            label, _, value = line.lstrip().lstrip("#").partition(":")
+            label = " ".join(label.lower().split())
+            for field, name in _COLLECTOR_LINES.items():
+                if label == name and value.strip():
+                    fields[field] = collector_text(value) or None
             continue
         if ":" not in line:
             raise PasteFormatError(f"line {number}: expected 'field: value'")
         key, value = line.split(":", 1)
         key = key.strip().lower().replace(" ", "_")
-        if key not in FIELDS:
+        if key not in FIELDS + EXTRA_FIELDS:
             raise PasteFormatError(
                 f"line {number}: unknown field {key!r} (expected one of {', '.join(FIELDS)})"
             )
@@ -112,6 +132,7 @@ def parse_paste(text: str, *, file_name: str, fetched_at: datetime) -> tuple[Raw
             employment_type=fields.get("employment_type"),
             posted_at=_parse_posted(posted) if posted else None,
             fetched_at=fetched_at,
+            **{k: fields.get(k) for k in (*EXTRA_FIELDS, *_COLLECTOR_LINES)},
         )
     except ValidationError as exc:
         problems = "; ".join(

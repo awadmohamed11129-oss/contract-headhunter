@@ -4,10 +4,18 @@ For the CSV-backed records, the CSV columns are the field names in declaration o
 IDs and NOC codes are always strings (Excel strips leading zeros).
 """
 
+from datetime import date
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 SCHEMA_VERSION = 3  # 2: responsibilities, nice_to_have, years_experience_min; 3: commitment
 
@@ -25,6 +33,13 @@ LanguageCode = Annotated[str, Field(pattern=r"^[a-z]{2}$")]
 
 class Record(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+def web_url_or_none(value: str | None) -> str | None:
+    """A link from posting data is kept only when it starts with http:// or https://: a
+    javascript: or file: link must never reach a button that opens it."""
+    text = (value or "").strip()
+    return text if text.lower().startswith(("http://", "https://")) else None
 
 
 # ---- enums ----
@@ -150,6 +165,18 @@ class RawJob(Record):
     noc_code: NocCode | None = None
     posted_at: AwareDatetime | None = None
     fetched_at: AwareDatetime
+    # Optional extras a manual paste file can carry (sources/paste.py).
+    contact_person: str | None = None
+    contact_email: str | None = None
+    contact_phone: str | None = None
+    apply_url: str | None = None
+    why_kept: str | None = None
+    fits_roles: str | None = None
+
+    @field_validator("apply_url", mode="after")
+    @classmethod
+    def _web_link_only(cls, value: str | None) -> str | None:
+        return web_url_or_none(value)
 
     @model_validator(mode="after")
     def _pay_range(self) -> "RawJob":
@@ -213,6 +240,19 @@ class Job(Record):
     contact_person: str | None = None
     # Added in 0.5 for jobs a reviewer entered (jobs CSV or the app's form):
     hours_per_week: float | None = Field(default=None, gt=0)
+    # Added with the usability work, all optional: more contact details found in the posting
+    # text (normalize/contact.py) and the job collector's two plain-words lines. Contact
+    # fields are personal data like contact_email.
+    contact_other_emails: list[str] = []
+    contact_phone: str | None = None
+    apply_url: str | None = None  # "apply" link, when it is not the posting's own link
+    why_kept: str | None = None  # collector: why the job was kept ("title: analyst, remote ...")
+    fits_roles: str | None = None  # collector: "Fits: business intelligence (1)"
+
+    @field_validator("apply_url", mode="after")
+    @classmethod
+    def _web_link_only(cls, value: str | None) -> str | None:
+        return web_url_or_none(value)
 
     @model_validator(mode="after")
     def _pay_range(self) -> "Job":
@@ -305,6 +345,18 @@ class RemovedJob(Record):
     removed_by: NonEmptyStr
 
 
+class TalentNote(Record):
+    """The reviewer's note on one contractor, written in the Profile pop-up on the Talent
+    screen (data/talent_notes.csv, append-only, the latest counts; an empty note clears
+    it). Kept apart from the contractor list, which a contractor import replaces row by row
+    (user decisions 2026-11-18). Personal data: shown on screen only, never logged."""
+
+    talent_id: NonEmptyStr
+    note: str | None = None
+    reviewer: NonEmptyStr
+    noted_at: AwareDatetime
+
+
 class TalentAvailability(Record):
     """The reviewer's "Available for matching" toggle for one contractor (Talent screen;
     data/talent_availability.csv, append-only, the latest counts).
@@ -312,9 +364,10 @@ class TalentAvailability(Record):
     Without a row, availability follows the contractor's own profile (`contract`). A row
     overrides it either way, until a contractor import brings a new or changed profile for
     them: the import then writes a row with the profile's answer, which takes precedence
-    (user decisions 2026-11-09). A hire sets it to not available (reviewer "hire"); undoing
-    the hire restores the value before it (reviewer "hire undone"), unless a reviewer changed
-    it in between (user decisions 2026-11-10)."""
+    (user decisions 2026-11-09). A hire does not change it: a contractor can take on several
+    projects (user decision 2026-11-18). Rows with reviewer "hire" come from the old rule;
+    undoing such a hire restores the value before it (reviewer "hire undone"), unless a
+    reviewer changed it in between."""
 
     talent_id: NonEmptyStr
     available: bool
@@ -389,6 +442,10 @@ class ContractorProfile(BaseModel):
     secondary_professions: list[str] = []
     years_experience: float | None = Field(default=None, ge=0)
     languages: list[str] = []  # "en", "fr"
+    # Optional extra columns (not part of the required 18). Shown to reviewers only, never
+    # sent to Gemini. Absent column = empty.
+    availability: str | None = None  # free text, e.g. "Available now", "From 2026-12-01"
+    profile_updated: date | None = None  # when the profile was last updated (YYYY-MM-DD)
 
 
 class LlmCallStatus(StrEnum):

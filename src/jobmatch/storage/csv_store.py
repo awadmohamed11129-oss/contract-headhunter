@@ -42,6 +42,7 @@ from jobmatch.schemas import (
     Run,
     ScanRecord,
     TalentAvailability,
+    TalentNote,
 )
 from jobmatch.storage.files import atomic_open, atomic_write_text
 
@@ -512,6 +513,7 @@ class CsvStore:
         self.talent_availability = table(
             "talent_availability.csv", TalentAvailability, TableMode.APPEND_ONLY
         )
+        self.talent_notes = table("talent_notes.csv", TalentNote, TableMode.APPEND_ONLY)
         # 0.5: contractor imports that changed what Gemini sees (rescan only those).
         self.contractor_changes = table(
             "contractor_changes.csv", ContractorChange, TableMode.APPEND_ONLY
@@ -530,14 +532,24 @@ class CsvStore:
             self.job_rounds,
             self.applications,
             self.talent_availability,
+            self.talent_notes,
             self.contractor_changes,
             self.removed_jobs,
         ]
 
 
-def export_csv[M: BaseModel](model: type[M], rows: Iterable[M], dest: Path) -> int:
-    """Write a human-facing copy (UTF-8 with BOM for Excel, formulas neutralized)."""
-    columns = list(model.model_fields)
+def export_csv[M: BaseModel](
+    model: type[M], rows: Iterable[M], dest: Path, *, optional_columns: tuple[str, ...] = ()
+) -> int:
+    """Write a human-facing copy (UTF-8 with BOM for Excel, formulas neutralized).
+
+    An optional column is left out of the file when no row has a value for it."""
+    rows = list(rows)
+    columns = [
+        c
+        for c in model.model_fields
+        if c not in optional_columns or any(getattr(r, c) not in (None, "", []) for r in rows)
+    ]
     count = 0
     with atomic_open(dest, encoding="utf-8-sig") as f:
         writer = csv.writer(f, lineterminator="\n")
@@ -681,6 +693,12 @@ class CsvReviewRepository:
         return latest
 
 
+def master_path(contractors_csv: Path) -> Path:
+    """The contractor list's master record (contractors_master.csv beside the list): the rows
+    as the last import brought them, never edited in the app (contractor_upsert)."""
+    return contractors_csv.with_name(f"{contractors_csv.stem}_master{contractors_csv.suffix}")
+
+
 class CsvContractorProfileRepository:
     """data/contractors/contractors.csv, the app's contractor list (paths.contractors_csv):
     built from the workbook (build-contractors) or upserted from a loaded file. Every
@@ -752,10 +770,10 @@ def check_data_folder(folder: Path, contractors_rel: Path, *, lock_timeout: floa
     for table in CsvStore(folder, lock_timeout=lock_timeout).all_tables():
         if table.path.exists():
             problems += [str(e) for e in table.check()[1]]
-    contractors = folder / contractors_rel
-    if contractors.exists():
-        try:
-            CsvContractorProfileRepository(contractors, lock_timeout=lock_timeout).list_all()
-        except CsvStoreError as exc:
-            problems.append(f"{contractors.name}: {str(exc).splitlines()[0]}")
+    for contractors in (folder / contractors_rel, master_path(folder / contractors_rel)):
+        if contractors.exists():
+            try:
+                CsvContractorProfileRepository(contractors, lock_timeout=lock_timeout).list_all()
+            except CsvStoreError as exc:
+                problems.append(f"{contractors.name}: {str(exc).splitlines()[0]}")
     return problems

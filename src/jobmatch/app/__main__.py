@@ -134,18 +134,29 @@ def main(argv: list[str] | None = None) -> None:
     secrets_file.load_into_environ(env_path)  # names only are returned; values never printed
     settings = load_settings(config_dir, data_root=root)
     configure_logging(settings.logging.level)
+    from jobmatch.backup_retention import remove_old_backups
 
-    from nicegui import ui
+    remove_old_backups(settings.paths.data_dir, settings.storage.backup_retention_days)
+
+    from nicegui import app, ui
 
     from jobmatch.app.service import AppService
     from jobmatch.app.ui import build_root
+    from jobmatch.app.window_fit import fit_window, screen_work_area
 
     service = AppService(settings, env_path)
+    window = fit_window(screen_work_area()) if native else None
+    if window is not None:  # fits the screen, resizable, maximized when the screen is small
+        app.native.window_args.update(
+            min_size=(window.min_width, window.min_height),
+            resizable=True,
+            maximized=window.maximized,
+        )
     ui.run(
         build_root(service, native=native),
         title=APP_TITLE,
         native=native,
-        window_size=(1200, 860) if native else None,
+        window_size=(window.width, window.height) if window else None,
         reload=False,
         show=False,
         host=None if native else args.host,
