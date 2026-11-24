@@ -321,7 +321,10 @@ def build_contractors_command(
         # The app's own contractor list: written through the storage backend.
         from jobmatch.storage.loader import create_loader
 
-        saved = create_loader(settings).contractors.replace_all(rows)
+        loader = create_loader(settings)
+        saved = loader.contractors.replace_all(rows)
+        # A full rebuild from the workbook is the new master: the next import compares with it.
+        loader.contractors_master.replace_all(rows)
         if saved:
             typer.echo(f"Previous list kept at {saved}")
     else:  # any other file: a plain export, after a backup of the old one

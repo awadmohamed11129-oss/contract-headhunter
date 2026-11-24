@@ -693,6 +693,12 @@ class CsvReviewRepository:
         return latest
 
 
+def master_path(contractors_csv: Path) -> Path:
+    """The contractor list's master record (contractors_master.csv beside the list): the rows
+    as the last import brought them, never edited in the app (contractor_upsert)."""
+    return contractors_csv.with_name(f"{contractors_csv.stem}_master{contractors_csv.suffix}")
+
+
 class CsvContractorProfileRepository:
     """data/contractors/contractors.csv, the app's contractor list (paths.contractors_csv):
     built from the workbook (build-contractors) or upserted from a loaded file. Every
@@ -764,10 +770,10 @@ def check_data_folder(folder: Path, contractors_rel: Path, *, lock_timeout: floa
     for table in CsvStore(folder, lock_timeout=lock_timeout).all_tables():
         if table.path.exists():
             problems += [str(e) for e in table.check()[1]]
-    contractors = folder / contractors_rel
-    if contractors.exists():
-        try:
-            CsvContractorProfileRepository(contractors, lock_timeout=lock_timeout).list_all()
-        except CsvStoreError as exc:
-            problems.append(f"{contractors.name}: {str(exc).splitlines()[0]}")
+    for contractors in (folder / contractors_rel, master_path(folder / contractors_rel)):
+        if contractors.exists():
+            try:
+                CsvContractorProfileRepository(contractors, lock_timeout=lock_timeout).list_all()
+            except CsvStoreError as exc:
+                problems.append(f"{contractors.name}: {str(exc).splitlines()[0]}")
     return problems

@@ -207,13 +207,23 @@ def _run(
                 f"{_count(len(loaded.given_ids), 'contractor')} had no talent ID, so the app "
                 "gave them one."
             )
-        report.contractors = upsert_contractors(loaded.rows, loader.contractors)
+        report.contractors = upsert_contractors(
+            loaded.rows, loader.contractors, loader.contractors_master
+        )
         c = report.contractors
         echo(
             f"  {len(c.added)} added · {len(c.updated)} updated · {c.unchanged} unchanged · "
+            f"{len(c.kept_edits)} edited in the app, kept (master unchanged) · "
             f"{c.kept_not_in_file} kept (not in the file)"
         )
-        say(f"Contractors: {len(c.added)} new, {len(c.updated)} updated, {c.unchanged} unchanged.")
+        say(
+            f"Contractors: {len(c.added)} new, {len(c.updated)} updated, {c.unchanged} unchanged"
+            + (
+                f", {_count(len(c.kept_edits), 'profile')} edited in the app kept as edited."
+                if c.kept_edits
+                else "."
+            )
+        )
         marked = mark_changes(loader, stored, c, llm.payload, datetime.now(UTC))
         if marked:
             echo(f"  {marked} contractor(s) will be matched again (their profile changed)")

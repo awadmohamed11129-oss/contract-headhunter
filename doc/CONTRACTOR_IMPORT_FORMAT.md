@@ -68,10 +68,14 @@ For anyone building a module that prepares contractor data for do good talent. T
 
 The import is an upsert keyed on `talent_id`:
 - **New `talent_id`:** the contractor is added.
-- **Known `talent_id` with any difference:** the stored row is replaced.
+- **Known `talent_id` whose row changed since the last import:** the changed fields are taken (see the next point for edits made in the app).
   - If something Gemini sees changed, the contractor is matched again against open jobs.
   - Changes to `talent_name` alone don't trigger matching again.
-- **Edits made in the app are overwritten.** A reviewer can edit a profile on the Talent screen (Profile › Edit › Save). The next import that has other values for that `talent_id` replaces the whole row, edits included. Fix the source data too, or the edit is lost. Reviewer notes are kept apart and survive imports.
+- **Edits made in the app are kept until the file changes that person.** A reviewer can edit a profile on the Talent screen (Profile › Edit › Save). Each import is compared with the **master record** (`data/contractors/contractors_master.csv`: the rows as the last import brought them, never edited in the app):
+  - The person's row is the same as last time: the edited row is kept as it is.
+  - The person's row changed: only the **fields that changed** in the file are taken; the other fields keep the reviewer's edits. A field changed both in the file and in the app takes the file's value.
+  - No master record yet (the first import after this rule shipped, or a list built before it): the file's row replaces the stored row, as before. The master record is written then.
+  - Reviewer notes are kept apart and survive imports.
 - **Contractor missing from the file:** kept, not removed. Removing someone is a manual Delete on the Talent screen.
 - **Same `talent_id` twice in the file:** the file is rejected.
 - **Empty `talent_id`:**

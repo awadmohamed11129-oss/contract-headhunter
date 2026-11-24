@@ -1,7 +1,8 @@
 """Editing on the Talent screen (user decisions 2026-11-18):
 - the Profile pop-up has Edit and Save: Save stores the fields in the app's contractor list
   (backed up first, checked like an imported row) and marks the contractor to be matched
-  again when what Gemini sees changed; a later import with other values wins;
+  again when what Gemini sees changed; a later import keeps the edit until the master
+  (the contractor file) changes, then takes only the fields it changed (2026-11-24);
 - the note lives in the Profile pop-up (talent_notes.csv) and shows read-only on the card;
 - the availability switch saves when flipped (no Save button);
 - the grey Résumé button adds a PDF; the viewer's Replace résumé needs a Save to replace
@@ -89,13 +90,35 @@ def test_notes(talent) -> None:  # noqa: ANN001, F811
     assert all(n.talent_id != "TAL-3" for n in service._loader().talent_notes.list_all())
 
 
-def test_import_replaces_an_edit(talent, tmp_path: Path) -> None:  # noqa: ANN001, F811
+def test_edit_kept_until_master_changes(talent, tmp_path: Path) -> None:  # noqa: ANN001, F811
+    """User decisions 2026-11-24: the contractor file is the master. An edit made in the app
+    stays while the master row is unchanged; when the master changes, only the fields it
+    changed are taken, and the master wins on a field edited in both."""
     service, _ = talent
-    service.save_profile("TAL-4", {"seniority": "Principal"}, None)
-    path = picked(tmp_path, [profile(4)])  # the source file still has the old values
-    service.pick_contractor_file(path.name, path=path)
-    service.run(echo=lambda s: None, confirm=lambda c: True)
-    assert stored(service, "TAL-4") == profile(4)
+    service.save_profile(
+        "TAL-4", {"seniority": "Principal", "standardized_headline": "Analyste BI"}, None
+    )
+
+    def load(row):  # noqa: ANN001, ANN202
+        path = picked(tmp_path, [row])
+        service.pick_contractor_file(path.name, path=path)
+        return service.run(echo=lambda s: None, confirm=lambda c: True).contractors
+
+    report = load(profile(4))  # the source file still has the old values: not a change
+    assert report.kept_edits == ["TAL-4"] and report.updated == []
+    row = stored(service, "TAL-4")
+    assert (row.seniority, row.standardized_headline) == ("Principal", "Analyste BI")
+
+    report = load(profile(4).model_copy(update={"rate_expectation": "95"}))
+    assert report.updated == ["TAL-4"]
+    row = stored(service, "TAL-4")
+    assert (row.rate_expectation, row.seniority, row.standardized_headline) == (
+        "95", "Principal", "Analyste BI",
+    )  # fmt: skip
+
+    load(profile(4).model_copy(update={"rate_expectation": "95", "seniority": "Senior"}))
+    row = stored(service, "TAL-4")
+    assert (row.seniority, row.standardized_headline) == ("Senior", "Analyste BI")
 
 
 def test_save_resume(talent) -> None:  # noqa: ANN001, F811

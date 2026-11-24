@@ -84,6 +84,7 @@ tests/               unit and end-to-end tests (synthetic data, network always m
 
 | File | For |
 |---|---|
+| [doc/USER_GUIDE.md](doc/USER_GUIDE.md) | End users: the full manual (install, every page, input formats, daily use, export and import) |
 | [doc/FIRST_LAUNCH.md](doc/FIRST_LAUNCH.md) | End users: installing the desktop app and first use |
 | [doc/RUN_LOCALLY.md](doc/RUN_LOCALLY.md) | Teammates: running the code on your own computer, step by step |
 | [doc/CONTRACTOR_IMPORT_FORMAT.md](doc/CONTRACTOR_IMPORT_FORMAT.md) | The contractor folder and CSV the app imports (for modules that prepare contractor data) |
