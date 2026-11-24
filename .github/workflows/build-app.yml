@@ -1,3 +1,4 @@
+# Fork build of the improvements branch.
 # Build the desktop app, "do good talent": an Intel Mac dogoodtalent.app (in a .dmg) and a
 # Windows dogoodtalent.exe (in a zip). The code package is still called jobmatch.
 #
