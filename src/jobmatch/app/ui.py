@@ -40,7 +40,7 @@ from nicegui.events import (
     ValueChangeEventArguments,
 )
 
-from jobmatch.app import ui_email
+from jobmatch.app import ui_email, window_guard
 from jobmatch.app.service import (
     AppError,
     AppService,
@@ -2952,6 +2952,8 @@ def _go(path: str) -> Callable[[], None]:
 
 def build_root(service: AppService, *, native: bool) -> Callable[[], None]:
     def root() -> None:
+        # A window that could not start is replaced by the browser: its pickers must be uploads.
+        use_native = native and not window_guard.browser_fallback_active()
         _serve_resumes(service)  # here, not once at start: the test harness resets routes
         service.note_app_opened()  # once per start: what is "new since last time" counts from here
         ui.page_title(APP_TITLE)
@@ -2964,7 +2966,7 @@ def build_root(service: AppService, *, native: bool) -> Callable[[], None]:
         with ui.header().classes("items-center px-6 py-3 gap-1"):
             ui.html(WORDMARK_HTML, sanitize=False).on("click", _go("/")).mark("app-title")
             ui.space()
-            run_indicator(service, native)
+            run_indicator(service, use_native)
             for text, path in (
                 ("Home", "/"),
                 ("Results", "/results"),
@@ -2981,12 +2983,12 @@ def build_root(service: AppService, *, native: bool) -> Callable[[], None]:
         # width and centre each screen in it (the header is separate and keeps full width).
         ui.sub_pages(
             {
-                "/": lambda: home_page(service, native),
-                "/results": lambda: results_page(service, native),
-                "/review": lambda: review_page(service, native),
-                "/jobs": lambda: jobs_page(service, native),
-                "/talent": lambda: talent_page(service, native),
-                "/settings": lambda: settings_page(service, native),
+                "/": lambda: home_page(service, use_native),
+                "/results": lambda: results_page(service, use_native),
+                "/review": lambda: review_page(service, use_native),
+                "/jobs": lambda: jobs_page(service, use_native),
+                "/talent": lambda: talent_page(service, use_native),
+                "/settings": lambda: settings_page(service, use_native),
             }
         ).classes("w-full items-center px-3 sm:px-6 py-5")
 

@@ -18,11 +18,14 @@ the user's first launch.
 import argparse
 import importlib
 import multiprocessing
+import os
 import sys
 import traceback
+import webbrowser
 from pathlib import Path
 
 from jobmatch import secrets_file
+from jobmatch.app import window_guard
 from jobmatch.app_paths import (
     APP_TITLE,
     bundled_config_dir,
@@ -110,6 +113,25 @@ def run_check(config_dir: Path, root: Path) -> int:
     return 0 if ok else 1
 
 
+def _guard_window(app) -> None:  # noqa: ANN001 (nicegui's app object)
+    """Native mode only: answer /__ping (so a second start finds this copy), and open the
+    browser if the window never connects (see window_guard)."""
+    from fastapi.responses import PlainTextResponse
+
+    @app.get(window_guard.PING_PATH)
+    def ping() -> PlainTextResponse:
+        return PlainTextResponse(window_guard.PING_TOKEN)
+
+    watch = window_guard.ConnectionWatch()
+    app.on_connect(lambda client: watch.connected(client.id))
+    app.on_disconnect(lambda client: watch.disconnected(client.id))
+    app.on_startup(
+        lambda: window_guard.start_watch(
+            watch, lambda: int(os.environ.get("NICEGUI_PORT") or 0), app.shutdown
+        )
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="jobmatch-app", description=__doc__)
     parser.add_argument("--browser", action="store_true", help="Serve in a browser tab instead.")
@@ -131,6 +153,11 @@ def main(argv: list[str] | None = None) -> None:
         env_path = config_dir.parent / ".env"
     if args.check:
         raise SystemExit(run_check(config_dir, root or ensure_layout(config_dir.parent)))
+    if native and args.port is None and args.data_root is None:  # one copy at a time
+        running = window_guard.find_running_copy()
+        if running is not None:
+            webbrowser.open(window_guard.local_url(running))
+            return
     secrets_file.load_into_environ(env_path)  # names only are returned; values never printed
     settings = load_settings(config_dir, data_root=root)
     configure_logging(settings.logging.level)
@@ -145,6 +172,8 @@ def main(argv: list[str] | None = None) -> None:
     from jobmatch.app.window_fit import fit_window, screen_work_area
 
     service = AppService(settings, env_path)
+    if native:
+        _guard_window(app)
     window = fit_window(screen_work_area()) if native else None
     if window is not None:  # fits the screen, resizable, maximized when the screen is small
         app.native.window_args.update(
