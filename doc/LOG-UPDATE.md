@@ -4,6 +4,24 @@ What each change solves, for the team. Newest first. Add an entry with every com
 
 ---
 
+## 2026-11-24 · Profile edits survive imports until the contractor file changes
+
+### What this solves
+- An edit made in the app (Talent › Profile › Edit › Save) was lost at the next contractor import whenever the file still had the old values, even if the file itself had not changed. With imports now happening automatically (remembered folders, Get latest), edits would have been undone in the background.
+- The contractor folder (or the downloaded copy) stays the master. The app now keeps a **master record**, `data/contractors/contractors_master.csv`: each person's row as the last import brought it, never edited in the app. Each import compares the file with it:
+  - row unchanged in the file: the edited row is kept;
+  - row changed in the file: only the fields that changed are taken, the other edits stay; a field changed in both takes the file's value;
+  - no master record yet: the file wins once, as before, and the record is written.
+- The run log and progress box report "N edited in the app, kept".
+
+### How to use
+- Nothing to set up. The first import after updating works the old way once (edits made before it are replaced), then the rule applies.
+- `build-contractors` writing the app's own list also writes the master record. The record is included in **Export all data**, and the backup check validates it.
+- Code: `contractor_upsert.upsert_contractors(..., master)` and `merge_master_change`, `csv_store.master_path`, `loader.contractors_master`, `pipeline.py`. A Profile save passes no master, so it never changes the record.
+- Tests: `tests/test_contractor_upsert.py` (unchanged master keeps edits, field-level merge, conflict, first import, new and missing people, Profile save, backup check); `tests/test_talent_edit.py::test_edit_kept_until_master_changes`.
+
+---
+
 ## 2026-11-24 · Window fits the screen, a busy Google is said plainly, first Get latest is the baseline
 
 ### What this solves

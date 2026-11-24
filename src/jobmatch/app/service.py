@@ -1834,8 +1834,9 @@ class AppService:
         the edited fields go to the contractor's row in the app's contractor list (backed up
         first), checked like an imported row; nothing is saved if a field is wrong. When
         what Gemini sees changed, the contractor is marked to be matched again, as after an
-        import. A later contractor import with other values for them replaces the edit. The
-        note goes to talent_notes.csv. talent_id cannot change (the résumé is named by it)."""
+        import. The master record is not touched, so a later import keeps the edit until the
+        contractor file changes this contractor (contractor_upsert). The note goes to
+        talent_notes.csv. talent_id cannot change (the résumé is named by it)."""
         loader = self._loader()
         profiles = self._profiles(loader)
         before = profiles.get(talent_id)

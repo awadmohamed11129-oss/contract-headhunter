@@ -28,6 +28,7 @@ from jobmatch.storage.csv_store import (
     CsvRunRepository,
     CsvStore,
     CsvUsageRepository,
+    master_path,
 )
 from jobmatch.storage.repositories import DataLoader
 
@@ -51,6 +52,9 @@ class CsvDataLoader:
         self.jobs = CsvJobRepository(self.store)
         self.contractors = CsvContractorProfileRepository(
             contractors_csv or data_dir / CONTRACTORS_DEFAULT, lock_timeout=lock_timeout
+        )
+        self.contractors_master = CsvContractorProfileRepository(
+            master_path(self.contractors.path), lock_timeout=lock_timeout
         )
         self.llm_matches = CsvLlmMatchRepository(self.store)
         self.reviews = CsvReviewRepository(self.store)

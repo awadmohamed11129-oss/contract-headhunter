@@ -889,8 +889,9 @@ def _profile_dialog(
         if note:
             note_text.set_visibility(False)
         hint.text = (
-            "Editing. Lists take one item per line. Save checks every field; a later "
-            "contractor import with other values for this contractor replaces the edit."
+            "Editing. Lists take one item per line. Save checks every field. Your edit stays "
+            "until the contractor file changes this contractor; then only the fields it "
+            "changed are taken from the file."
         )
         grid.refresh()
 
@@ -2526,9 +2527,10 @@ def talent_page(service: AppService, native: bool) -> None:
                 "flip it; a hire never changes it. The coloured tag (Available now, Booked "
                 "until...) is what the contractor's own profile says about their time. "
                 "Profile opens the contractor's details: "
-                "Edit changes them and Save stores them with your note. A later contractor "
-                "list import with other values replaces your edits, and a new or changed "
-                "profile in an import sets the switch from the contractor's own answer."
+                "Edit changes them and Save stores them with your note. Your edits stay until "
+                "the contractor file changes that contractor; then only the fields the file "
+                "changed are taken. A new or changed profile in an import sets the switch "
+                "from the contractor's own answer."
             )
         with ui.row().classes("w-full items-center gap-3"):
             ui.input(placeholder="Search by name or headline", on_change=search).props(

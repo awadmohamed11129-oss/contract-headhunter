@@ -13,7 +13,11 @@ from jobmatch.sources.contractor_upsert import (
     read_contractor_file,
     upsert_contractors,
 )
-from jobmatch.storage.csv_store import CsvContractorProfileRepository
+from jobmatch.storage.csv_store import (
+    CsvContractorProfileRepository,
+    check_data_folder,
+    master_path,
+)
 
 
 def person(talent_id: str, headline: str, **extra: object) -> ContractorProfile:
@@ -81,6 +85,102 @@ def test_loading_the_same_file_again_changes_nothing(tmp_path: Path) -> None:
     report = upsert_contractors(rows, repo(dest))
     assert not report.changed and report.unchanged == 1
     assert dest.read_bytes() == before and backups(dest) == []
+
+
+# ---- the master record (user decisions 2026-11-24): edits kept until the master changes ----
+
+
+def lists(tmp_path: Path) -> tuple[CsvContractorProfileRepository, CsvContractorProfileRepository]:
+    """The app's list and its master record, as the loader places them."""
+    dest = tmp_path / "contractors" / "contractors.csv"
+    return repo(dest), repo(master_path(dest))
+
+
+def edit(lst: CsvContractorProfileRepository, talent_id: str, **changes: object) -> None:
+    """A save from the Profile pop-up: no master record."""
+    [row] = [p for p in lst.list_all() if p.talent_id == talent_id]
+    upsert_contractors([row.model_copy(update=changes)], lst)
+
+
+def test_master_path_sits_beside_the_list(tmp_path: Path) -> None:
+    dest = tmp_path / "contractors" / "contractors.csv"
+    assert master_path(dest) == tmp_path / "contractors" / "contractors_master.csv"
+
+
+def test_without_a_master_record_the_file_wins_once(tmp_path: Path) -> None:
+    """Decision 1a: the first import after the rule shipped replaces differing rows as
+    before, then records the master."""
+    lst, master = lists(tmp_path)
+    upsert_contractors([person("TAL-1", "Data Analyst")], lst)  # stored before the rule
+    edit(lst, "TAL-1", seniority="Senior")
+    report = upsert_contractors([person("TAL-1", "Data Analyst")], lst, master)
+    assert report.updated == ["TAL-1"] and report.kept_edits == []
+    assert stored(lst.path) == [person("TAL-1", "Data Analyst")]
+    assert stored(master.path) == [person("TAL-1", "Data Analyst")]
+
+
+def test_unchanged_master_keeps_the_edit(tmp_path: Path) -> None:
+    lst, master = lists(tmp_path)
+    rows = [person("TAL-1", "Data Analyst"), person("TAL-2", "Rédactrice UX", languages=["fr"])]
+    upsert_contractors(rows, lst, master)
+    edit(lst, "TAL-2", standardized_headline="Rédactrice UX principale", seniority="Senior")
+    edited = stored(lst.path)
+    report = upsert_contractors(rows, lst, master)  # the same master file again
+    assert report.kept_edits == ["TAL-2"] and not report.changed
+    assert (report.unchanged, report.file_rows) == (1, 2)
+    assert stored(lst.path) == edited
+    assert stored(master.path) == rows  # the record never takes an edit
+
+
+def test_changed_master_takes_only_the_changed_fields(tmp_path: Path) -> None:
+    """Decision 2b: an edit to another field survives a change in the master."""
+    lst, master = lists(tmp_path)
+    upsert_contractors([person("TAL-1", "Analyste de données", languages=["fr"])], lst, master)
+    edit(lst, "TAL-1", standardized_headline="Analyste BI", seniority="Senior")
+    newer = person("TAL-1", "Analyste de données", languages=["fr", "en"])
+    report = upsert_contractors([newer], lst, master)
+    assert report.updated == ["TAL-1"] and report.kept_edits == []
+    [row] = stored(lst.path)
+    assert row.languages == ["fr", "en"]  # from the master
+    assert (row.standardized_headline, row.seniority) == ("Analyste BI", "Senior")  # edits
+    assert stored(master.path) == [newer]
+
+
+def test_a_field_changed_in_both_takes_the_master(tmp_path: Path) -> None:
+    lst, master = lists(tmp_path)
+    upsert_contractors([person("TAL-1", "Data Analyst")], lst, master)
+    edit(lst, "TAL-1", standardized_headline="BI Analyst", seniority="Senior")
+    upsert_contractors([person("TAL-1", "Senior Data Analyst")], lst, master)
+    [row] = stored(lst.path)
+    assert (row.standardized_headline, row.seniority) == ("Senior Data Analyst", "Senior")
+
+
+def test_master_record_adds_new_people_and_keeps_missing_ones(tmp_path: Path) -> None:
+    lst, master = lists(tmp_path)
+    upsert_contractors([person("TAL-1", "Recruiter"), person("TAL-2", "Comptable")], lst, master)
+    report = upsert_contractors(
+        [person("TAL-2", "Comptable"), person("TAL-3", "Gestionnaire de projet")], lst, master
+    )
+    assert report.added == ["TAL-3"] and report.kept_not_in_file == 1
+    assert [p.talent_id for p in stored(lst.path)] == ["TAL-1", "TAL-2", "TAL-3"]
+    assert [p.talent_id for p in stored(master.path)] == ["TAL-1", "TAL-2", "TAL-3"]
+
+
+def test_a_save_without_master_leaves_the_record_alone(tmp_path: Path) -> None:
+    lst, master = lists(tmp_path)
+    upsert_contractors([person("TAL-1", "Data Analyst")], lst, master)
+    before = master.path.read_bytes()
+    edit(lst, "TAL-1", standardized_headline="Analyste de données")
+    assert master.path.read_bytes() == before
+
+
+def test_a_broken_master_record_is_reported_by_the_backup_check(tmp_path: Path) -> None:
+    lst, master = lists(tmp_path)
+    upsert_contractors([person("TAL-1", "Data Analyst")], lst, master)
+    assert check_data_folder(tmp_path, Path("contractors/contractors.csv"), lock_timeout=5) == []
+    master.path.write_text("not,the,right,header\n1,2,3,4\n", encoding="utf-8")
+    problems = check_data_folder(tmp_path, Path("contractors/contractors.csv"), lock_timeout=5)
+    assert problems and problems[0].startswith("contractors_master.csv")
 
 
 def test_duplicate_talent_ids_in_the_file_are_refused(tmp_path: Path) -> None:

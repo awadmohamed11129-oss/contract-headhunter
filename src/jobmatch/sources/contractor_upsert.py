@@ -12,10 +12,23 @@ Accepted files:
   name matches a contractor already given such an ID reuses it, so loading the same file
   again makes no duplicate. Names are compared on this machine only and never reported.
 
-Upsert rules (assumptions, to confirm):
+Upsert rules:
 - a talent_id not in the list yet is added at the end;
-- a known talent_id whose row differs replaces the stored row in place;
-- contractors missing from the loaded file are kept (removal needs its own decision).
+- contractors missing from the loaded file are kept (removal needs its own decision);
+- a known talent_id whose row differs (user decisions 2026-11-24: the contractor folder or
+  the downloaded copy is the master; edits made in the app are kept until the master
+  changes): the file is compared with the master record, the rows as the last import
+  brought them (contractors_master.csv beside the list, never edited in the app).
+  - master record unchanged for that person: the stored row is kept as it is, so edits
+    made in the app survive (reported as kept_edits);
+  - master record changed: only the fields that changed in the master are taken; every
+    other field keeps the stored value (an edit to another field survives). A field changed
+    both in the master and in the app takes the master's value;
+  - no master record yet (the first import after this rule shipped, user decision 1a), or
+    a person missing from it: the file's row replaces the stored row, as before.
+  The master record is then updated to the file (people not in the file keep their last
+  master row). A save from the Profile pop-up passes no master: it changes the stored list
+  only.
 
 The list is replaced only when something changed, through the storage backend (with the CSV
 backend: atomically, after a timestamped backup in its backups/ folder). Skills are not
@@ -47,6 +60,8 @@ class UpsertReport(BaseModel):
     updated: list[str]
     unchanged: int
     kept_not_in_file: int
+    # Rows the file differs on but the master record did not change: the app's edits kept.
+    kept_edits: list[str] = []
 
     @property
     def changed(self) -> bool:
@@ -179,36 +194,70 @@ def read_contractor_file(
     ).rows
 
 
+def merge_master_change(
+    local: ContractorProfile, last: ContractorProfile, new: ContractorProfile
+) -> ContractorProfile:
+    """The stored row after the master changed from `last` to `new`: each field that changed
+    in the master takes the new value; every other field keeps the stored (possibly edited)
+    value."""
+    data = local.model_dump()
+    for field in ContractorProfile.model_fields:
+        if getattr(new, field) != getattr(last, field):
+            data[field] = getattr(new, field)
+    return ContractorProfile.model_validate(data)
+
+
 def upsert_contractors(
-    incoming: list[ContractorProfile], repo: ContractorProfileRepository
+    incoming: list[ContractorProfile],
+    repo: ContractorProfileRepository,
+    master: ContractorProfileRepository | None = None,
 ) -> UpsertReport:
     """Merge `incoming` into the stored contractor list (see the module docstring). The list
     is replaced only when something changed, and the repository keeps the old one first.
-    Run under the pipeline lock, so nothing else writes the list meanwhile."""
+    `master`: the master record of an import from the contractor file (None for a save from
+    the Profile pop-up, which is not the master). Run under the pipeline lock, so nothing
+    else writes the list meanwhile."""
     ids = [p.talent_id for p in incoming]
     if dupes := sorted({i for i in ids if ids.count(i) > 1}):
         raise ContractorFileError(f"talent_id listed more than once: {', '.join(dupes)}")
     by_id = {p.talent_id: p for p in incoming}
     stored = repo.list_all() if repo.exists() else []
     stored_ids = {p.talent_id for p in stored}
+    baseline = (
+        {p.talent_id: p for p in master.list_all()}
+        if master is not None and master.exists()
+        else None
+    )
     updated: list[str] = []
+    kept_edits: list[str] = []
     merged: list[ContractorProfile] = []
     for profile in stored:
         new = by_id.get(profile.talent_id)
-        if new is not None and new != profile:
-            updated.append(profile.talent_id)
-            merged.append(new)
-        else:
+        if new is None or new == profile:
             merged.append(profile)
+            continue
+        last = baseline.get(profile.talent_id) if baseline is not None else None
+        result = new if last is None else merge_master_change(profile, last, new)
+        if result == profile:
+            kept_edits.append(profile.talent_id)
+            merged.append(profile)
+        else:
+            updated.append(profile.talent_id)
+            merged.append(result)
     added = [p for p in incoming if p.talent_id not in stored_ids]
     merged += added
     report = UpsertReport(
         file_rows=len(incoming),
         added=[p.talent_id for p in added],
         updated=updated,
-        unchanged=len(incoming) - len(added) - len(updated),
+        unchanged=len(incoming) - len(added) - len(updated) - len(kept_edits),
         kept_not_in_file=len(stored_ids - set(by_id)),
+        kept_edits=kept_edits,
     )
     if report.changed:
         repo.replace_all(merged)  # keeps the previous list first
+    if master is not None:
+        record = {**(baseline or {}), **by_id}  # people not in the file keep their last row
+        if record != baseline:
+            master.replace_all(record.values())  # keeps the previous record first
     return report
