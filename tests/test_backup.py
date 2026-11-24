@@ -143,3 +143,16 @@ def test_settings_card(talent) -> None:  # noqa: ANN001, F811
         await user.should_see("Use a password of at least 10 characters.")
 
     run_ui(service, scenario)
+
+
+def test_import_forgets_what_the_state_file_remembered(talent) -> None:  # noqa: ANN001, F811
+    service, _ = talent
+    _, path = service.export_data(PASSWORD)
+    service._save_state(
+        jobs_seen=["abc"], contractors_sig="old", inbox_failed=["def"], last_jobs_at="t"
+    )
+    service.check_import(path, PASSWORD)
+    service.import_checked()
+    state = service._state()
+    assert not {"jobs_seen", "contractors_sig", "inbox_failed"} & set(state)
+    assert state["last_jobs_at"] == "t"  # only what describes the replaced data goes

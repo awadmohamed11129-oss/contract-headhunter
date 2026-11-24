@@ -58,11 +58,14 @@ def test_find_matches_page(app_settings, tmp_path: Path) -> None:  # noqa: ANN00
 
     async def scenario(user) -> None:  # noqa: ANN001
         await user.open("/")
-        await user.should_see("Contractors (optional)")
+        await user.should_see("Contractors")
         await user.should_not_see("1. Contractors")
-        await user.should_see("2 contractor(s) processed.")
+        await user.should_see("2 contractors", marker="contractors-status")  # a one-line row
+        await user.should_not_see("Choose folder…")  # its drop zone opens with "Change…"
+        user.find(marker="change-contractors").click()
+        await user.should_see("2 contractors on your list.")
         await user.should_not_see("Repick the contractor folder")
-        await user.should_see("A jobs CSV (one row per posting, from the template)")
+        await user.should_see(marker="add-job")
         await user.should_see("Nothing picked yet", marker="contractor-folder-path")
         await user.should_see("Choose folder…", marker="contractor-folder")
         await user.should_see("Choose files…", marker="jobs-files")
@@ -70,8 +73,8 @@ def test_find_matches_page(app_settings, tmp_path: Path) -> None:  # noqa: ANN00
         await user.should_see(marker="ingest")
         await user.should_see(marker="find-matches")
         user.find(marker="ingest").click()
-        await user.should_see("Ingested: ", retries=40)
-        await user.should_see("Nothing sent to Gemini.")
+        await user.should_see("Saved: ", retries=40)
+        await user.should_see("Nothing was sent to Gemini.")
 
     run_ui(service, scenario)
     assert fake.calls == 0
@@ -93,7 +96,7 @@ def test_stored_files_leave_the_inbox(app_settings, tmp_path: Path) -> None:  # 
     second = service.run(echo=lines.append, confirm=lambda c: True, match=False)
     assert sorted(o.outcome for i in second.ingest for o in i.outcomes) == ["error", "new"]
     assert [p.name.split("-", 1)[1] for p in inbox.glob("*.txt")] == ["broken.txt"]  # kept
-    assert "  1 file(s) with errors stay in the inbox for the next run" in lines
+    assert "  1 file(s) had a problem and stay in the inbox: fix them and run again" in lines
 
     third = service.run(echo=lambda s: None, confirm=lambda c: True, match=False)
     assert [o.outcome for i in third.ingest for o in i.outcomes] == ["error"]  # only the retry

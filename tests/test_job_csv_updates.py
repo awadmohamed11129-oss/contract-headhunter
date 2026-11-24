@@ -55,7 +55,7 @@ def test_fix_and_pick_again(app_settings: Settings, tmp_path: Path) -> None:
     outcomes, lines = ingest(ANALYST, ANALYSTE)
     assert outcomes == ["new", "invalid"]
     assert any("'in-person': use on-site, hybrid or remote" in line for line in lines)
-    assert any("row(s) dropped" in line for line in lines)
+    assert any("row skipped" in line for line in lines)
     inbox = service.data_dir / "inbox" / "manual"
     assert list(inbox.glob("*.csv")) == []  # moved to done/: the bad row never comes back
     per_job = fake.calls  # screening, then review

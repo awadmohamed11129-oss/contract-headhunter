@@ -23,7 +23,7 @@ from jobmatch.config import (
 )
 from jobmatch.normalize.commitment import CommitmentDetector
 from jobmatch.normalize.company import CompanyNormalizer
-from jobmatch.normalize.contact import contact_email
+from jobmatch.normalize.contact import find_contact
 from jobmatch.normalize.contract import ContractAssessment, ContractDetector
 from jobmatch.normalize.dedupe import TitleSimilarity
 from jobmatch.normalize.description import compose_description
@@ -149,6 +149,9 @@ class Normalizer:
         # Full-/part-time never filters a posting; it is recorded next to the employment type.
         commitment = self._commitment.detect(raw.employment_type, title, job_text)
         status, filter_reason = self._status(raw, now, location, contract, language, job_text)
+        contact = find_contact(raw.description, posting_url=raw.url)
+        email = (raw.contact_email or "").lower() or contact.email
+        others = [a for a in (contact.email, *contact.other_emails) if a and a != email]
 
         return Job(
             job_id=job_id_for(raw.source, raw.source_id),
@@ -190,7 +193,13 @@ class Normalizer:
             fingerprint=job_fingerprint(company_norm, title_norm, location.city),
             status=status,
             filter_reason=filter_reason,
-            contact_email=contact_email(description),
+            contact_email=email,
+            contact_person=raw.contact_person or contact.person,
+            contact_other_emails=others,
+            contact_phone=raw.contact_phone or contact.phone,
+            apply_url=raw.apply_url or contact.apply_url,
+            why_kept=raw.why_kept,
+            fits_roles=raw.fits_roles,
         )
 
     @staticmethod

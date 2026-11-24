@@ -332,7 +332,7 @@ def build_contractors_command(
             backup = backups / f"{dest.stem}.{stamp}{dest.suffix}"
             shutil.copy2(dest, backup)
             typer.echo(f"Previous file copied to {backup}")
-        export_csv(ContractorRow, rows, dest)
+        export_csv(ContractorRow, rows, dest, optional_columns=("availability", "profile_updated"))
     typer.echo(f"Wrote {report.exported} contractor(s) to {dest}")
     typer.echo(
         f"  with a profile: {report.with_profile} · without a profile: {report.without_profile}"

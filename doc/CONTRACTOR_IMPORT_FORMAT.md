@@ -1,6 +1,6 @@
 # Contractor import format (what the app expects)
 
-For anyone building a module that prepares contractor data for do good talent. The module's output is imported the same way a reviewer does it today: **Find matches › Choose folder**, then **Ingest** or **Find matches**. Code: `src/jobmatch/sources/resumes.py` (folder), `src/jobmatch/sources/contractor_upsert.py` (file), `src/jobmatch/schemas.py` (`ContractorProfile`).
+For anyone building a module that prepares contractor data for do good talent. The module's output is imported the same way a reviewer does it today: **Home › Choose folder**, then **Save without matching** or **Find matches**. Code: `src/jobmatch/sources/resumes.py` (folder), `src/jobmatch/sources/contractor_upsert.py` (file), `src/jobmatch/schemas.py` (`ContractorProfile`).
 
 ## 1. Folder layout
 

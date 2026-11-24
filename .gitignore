@@ -136,3 +136,7 @@ $RECYCLE.BIN/
 # ---- Desktop app ----
 # NiceGUI local storage (created when the app runs from the repo)
 .nicegui/
+
+# Downloaded copies of the do good link (contractor data): never commit
+synced/
+sync_state.json

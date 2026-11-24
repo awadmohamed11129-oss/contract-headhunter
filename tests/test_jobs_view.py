@@ -59,7 +59,7 @@ def test_summary_texts(make_job: Callable[..., Job]) -> None:
     assert job_summary(job, [_match(fit, 75)]) == "1 match · best score 75"
     assert job_summary(job, [_match(LlmVerdict.PARTIAL, 58)]) == "best score 58"
     assert job_summary(job, []) == "no match"
-    assert job_summary(job, None) == ""  # the state label says "Not scanned yet"
+    assert job_summary(job, None) == ""  # the state label says "Not checked yet"
     done = make_job(availability=JobAvailability.COMPLETED)
     assert job_summary(done, three) == "completed"
     assert job_summary(make_job(availability="unavailable"), None) == "unavailable"
@@ -165,10 +165,11 @@ def test_older_jobs_csv_loads_and_is_upgraded_with_a_backup(
     repo.add_new([make_job(job_id="paste:2", source_id="2", title_raw="Analyste (mandat)")])
     assert [j.job_id for j in repo.list_all()] == ["paste:1", "paste:2"]
     with store.jobs.path.open(encoding="utf-8", newline="") as f:
-        assert next(csv.reader(f))[-6:] == new_columns
+        header = next(csv.reader(f))
+        assert [c for c in header if c in new_columns] == new_columns  # added back, in order
     assert list(store.backups_dir.glob("jobs.*.csv"))  # the old file was kept
     sidecar = json.loads(store.jobs.sidecar_path.read_text(encoding="utf-8"))
-    assert sidecar["columns"][-6:] == new_columns
+    assert [c for c in sidecar["columns"] if c in new_columns] == new_columns
 
 
 # ---- the screen ----
@@ -180,9 +181,9 @@ def test_jobs_screen_colours_and_toggles(judged: AppService) -> None:
     async def scenario(user) -> None:  # noqa: ANN001
         await user.open("/jobs")
         await user.should_see("Analyste de Données")
-        await user.should_see("Scanned · 1 match · best score", marker="job-summary")
-        await user.should_see("Scanned · no match", marker="job-summary")
-        await user.should_see("3 job(s) · 3 scanned (2 with matches, 1 with no match)")
+        await user.should_see("Checked · 1 match · best score", marker="job-summary")
+        await user.should_see("Checked · no match", marker="job-summary")
+        await user.should_see("3 jobs · 3 checked (2 with matches, 1 with no match)")
         red = next(iter(user.find(marker="job-state-no_match").elements))
         assert f"background-color: {JOB_STATE_STYLE['no_match'][0]}" in _css(red)
         await user.should_not_see(marker="reopen:paste:3")  # Reopen: closed jobs only
@@ -285,3 +286,27 @@ def test_jobs_filters(judged: AppService) -> None:
             await scenario(user)
 
     asyncio.run(main())
+
+
+# ---- one job count everywhere, and the jobs the import left out ----
+
+
+def test_one_job_count_and_the_left_out_jobs_say_why(
+    service: AppService, make_job: Callable[..., Job]
+) -> None:
+    from jobmatch.schemas import JobStatus
+
+    repo = CsvJobRepository(CsvStore(service.data_dir, lock_timeout=5))
+    repo.add_new([
+        make_job(job_id="paste:1", source_id="1"),
+        make_job(job_id="paste:2", source_id="2", title_raw="Permanent role",
+                 status=JobStatus.FILTERED_OUT, filter_reason="not_contract"),
+        make_job(job_id="paste:3", source_id="3", title_raw="Copy of the first",
+                 status=JobStatus.FILTERED_OUT, filter_reason="duplicate:paste:1"),
+    ])  # fmt: skip
+    summary = service.home_summary()
+    assert summary.jobs == service.jobs_listed() == len(service.jobs_overview()) == 1
+    assert summary.jobs_left_out == 2 and service.data_counts()[0] == 3  # the file holds all 3
+    reasons = {j.title: j.reason for j in service.jobs_left_out()}
+    assert reasons["Permanent role"] == "It is not a contract job."
+    assert reasons["Copy of the first"] == "It is the same job as one already on the list."

@@ -57,8 +57,8 @@ Then open **http://localhost:8080** in your browser. It's the same app as the de
 
 Your copy starts empty: `data/` is git-ignored because it holds contractors' personal information.
 
-- **Contractors:** on **Find matches**, choose the contractor folder: one `.xlsx` or `.csv` file, plus an optional `resume/` folder of PDFs named by talent ID (for example `TAL-12.pdf`). Then click **Ingest**.
-- **Jobs:** on **Find matches**, click **Get CSV template**, fill it in, and choose it; or use **Add a job by hand**.
+- **Contractors:** on **Home**, choose the contractor folder: one `.xlsx` or `.csv` file, plus an optional `resume/` folder of PDFs named by talent ID (for example `TAL-12.pdf`). Then click **Save without matching**.
+- **Jobs:** on **Home**, click **Get CSV template**, fill it in, and choose it; or use **Add a job by hand**.
 - **Match:** click **Find matches**. Each job uses Gemini calls from your free daily quota; the app asks first when a run would use most of it.
 - **Copying a teammate's data:** they use **Settings › Export** (a password-protected `.zip`), send you the file and tell you the password separately, and you use **Settings › Import**. Import replaces your current data (yours is kept in `data/backups/` first).
 
